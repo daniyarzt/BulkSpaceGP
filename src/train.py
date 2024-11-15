@@ -1,4 +1,7 @@
 import os 
+import pathlib
+import pickle
+from datetime import datetime
 from argparse import ArgumentParser, BooleanOptionalAction
 
 from utilities import get_hessian_eigenvalues
@@ -13,6 +16,7 @@ import numpy as np
 from torchsummary import summary
 import matplotlib.pyplot as plt
 
+
 DEVICE = 'cpu'
 
 def arg_parser():
@@ -20,6 +24,9 @@ def arg_parser():
 
     parser.add_argument('--task', type=str, required=True)
     parser.add_argument('--debug', action=BooleanOptionalAction, default=False)
+    parser.add_argument('--storage', type=pathlib.Path, default='../storage')
+    parser.add_argument('--save_results', action=BooleanOptionalAction, default=True)
+
 
     parser.add_argument('--epochs', type=int, default=5, required=True)
     parser.add_argument('--dataset', choices = ['MNIST_5k'], default='MNIST_5k')
@@ -200,7 +207,7 @@ def projected_training(args):
     print('Finished warm-up training!')
     
     print('Post warm-up evalution...')
-    eval(test_loader, model)   
+    warm_up_accuracy = eval(test_loader, model)   
 
     # Training loop 
     print('Started training...')
@@ -210,7 +217,7 @@ def projected_training(args):
     print('Finished training!')
 
     print('Final evaluation')
-    eval(test_loader, model)
+    final_accuracy = eval(test_loader, model)
 
     per_batch_losses = warm_up_losses[0] + train_losses[0]
     per_epoch_losses = warm_up_losses[1] + train_losses[1]
@@ -229,7 +236,21 @@ def projected_training(args):
         plt.legend()
 
         plt.show()
-    return per_batch_losses, per_epoch_losses
+
+    results = {}
+    results['warm_up_losses_batch'] = warm_up_losses[0]
+    results['warm_up_losses_epoch'] = warm_up_losses[1]
+    results['train_losses_batch'] = train_losses[0]
+    results['train_losses_epoch'] = train_losses[1]
+    results['warm_up_accurary'] = warm_up_accuracy
+    results['final_accuracy'] = final_accuracy
+
+    if args.save_results and not args.debug:
+        current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+        file_name = f'{args.storage}/projected_training_{current_time}.pkl'
+        with open(file_name, "wb") as file:
+            pickle.dump(results, file)
+        print(f'Results saved in file_name!')
 
 def main(args):
     print(f'DEVICE = {DEVICE}')
