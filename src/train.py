@@ -228,6 +228,11 @@ def projected_training(args):
 
     per_batch_losses = warm_up_losses[0] + train_losses[0]
     per_epoch_losses = warm_up_losses[1] + train_losses[1]
+    output_name = f"{args.dataset}_{args.model}_{args.activation}_{args.algo}"
+    if args.hidden_sizes:
+        output_name += "_hidden_sizes_" + "-".join(map(str, args.hidden_sizes))
+    if args.num_hidden_layers:
+        output_name += "_num_hidden_layers_" + "-".join(map(str, args.num_hidden_layers))
 
     if args.plot_losses:
         plt.figure(1)
@@ -244,13 +249,8 @@ def projected_training(args):
 
         plt.show()
         output_dir = "../plots"
-        plot_name = f"{args['dataset']}_{args['model']}_{args['activation']}_{args['algo']}"
-        if args.get('hidden_sizes'):
-            plot_name += "_hidden_sizes_" + "-".join(map(str, args['hidden_sizes']))
-        if args.get('num_hidden_layers'):
-            plot_name += "_num_hidden_layers_" + "-".join(map(str, args['num_hidden_layers']))
 
-        plot_name += '.png'
+        plot_name = output_name+ '.png'
         os.makedirs(output_dir, exist_ok=True)
         save_path = os.path.join(output_dir, plot_name)
         plt.savefig(save_path)
@@ -266,7 +266,7 @@ def projected_training(args):
 
     if args.save_results and not args.debug:
         current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-        file_name = f'{args.storage}/projected_training_{current_time}.pkl'
+        file_name = f'{args.storage}/projected_training_{current_time}_{output_name}.pkl'
         with open(file_name, "wb") as file:
             pickle.dump(results, file)
         print(f'Results saved in file_name!')
