@@ -4,6 +4,9 @@ import pickle
 from datetime import datetime
 from argparse import ArgumentParser, BooleanOptionalAction
 
+import time
+
+
 from utilities import get_hessian_eigenvalues
 from torch.nn.utils import parameters_to_vector, vector_to_parameters
 
@@ -35,7 +38,9 @@ def arg_parser():
 
     # Model parameters 
     parser.add_argument('--model', choices = ['MLP'], default='MLP')
-    parser.add_argument('--hidden_layers', type=int, nargs='+', required=False)
+    parser.add_argument('--hidden_sizes', type=int, nargs='+', required=False)
+    parser.add_argument('--num_hidden_layers', type=int, nargs='+', required=False)
+    parser.add_argument('--activation', choices = ['relu','tanh'], default='relu')
 
     # projected_training args
     parser.add_argument('--warm_up_epochs', type=int, default=0, required=False)
@@ -61,14 +66,14 @@ def get_model(input_size : int, output_size : int, args) -> nn.Module:
                     layers.append(nn.ReLU())
                     in_size = hidden_size
                 
-                layers.append(nn.Linear(in_size, output_size))
+                layers.append(nn.Linear(in_size, output_size).to(DEVICE))
                 self.model = nn.Sequential(*layers)
                 
             def forward(self, x):
                 x = x.view(-1, 28 * 28)
                 return self.model(x)
             
-        return MLP(input_size, output_size, args.hidden_layers)
+        return MLP(input_size, output_size, args.hidden_sizes)
     else:
         raise NotImplementedError()
     
@@ -93,12 +98,12 @@ def projected_step_top(model, loss, criterion, dataset, batch_size, lr):
     evals, evecs = get_hessian_eigenvalues(model, criterion, dataset, 
                                            physical_batch_size=batch_size, 
                                            neigs=10, device=DEVICE)
-    evecs.transpose_(1, 0)
+    evecs.to(DEVICE).transpose_(1, 0)
     
     with torch.no_grad():  # Ensure we don’t track these operations for gradient computation
         grad = torch.autograd.grad(loss, inputs=model.parameters(), create_graph=True)
-        vec_grad = parameters_to_vector(grad)
-        step = torch.Tensor(vec_grad.shape)
+        vec_grad = parameters_to_vector(grad).to(DEVICE)
+        step = torch.Tensor(vec_grad.shape).to(DEVICE)
         for vec in evecs:
             step += torch.dot(vec_grad, vec) * vec  # Update each parameter by gradient descent
         vec_params = parameters_to_vector(model.parameters())
@@ -110,6 +115,8 @@ def train(train_loader, model, criterion, optimizer, lr, num_epochs : int, algo 
     losses = []
     per_epoch_losses = []
     for epoch in range(num_epochs):
+        start_time = time.time() 
+        print(f'Epoch [{epoch + 1}/{num_epochs}]')
         loss_sum = 0.0
         batches = 0.0
         for images, labels in train_loader:
@@ -117,7 +124,7 @@ def train(train_loader, model, criterion, optimizer, lr, num_epochs : int, algo 
             labels = labels.to(DEVICE)
 
             # Forward pass 
-            outputs = model(images)
+            outputs = model(images).to(DEVICE)
             loss = criterion(outputs, labels)
             loss_sum += loss.item()
             batches += 1
@@ -136,8 +143,8 @@ def train(train_loader, model, criterion, optimizer, lr, num_epochs : int, algo 
                 projected_step_top(model, loss, criterion, dataset, batch_size=64, lr=lr)
             else:
                 raise NotImplementedError()
-                
-        print(f'Epoch [{epoch + 1}/{num_epochs}], Loss: {(loss_sum / batches):.4f}')
+        epoch_time = time.time() - start_time        
+        print(f'Loss: {(loss_sum / batches):.4f}, Time: {epoch_time:.2f} seconds')
         per_epoch_losses.append(loss_sum / batches)
 
     return losses, per_epoch_losses
@@ -197,7 +204,7 @@ def projected_training(args):
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(model.parameters(), lr=lr)
 
-    summary(model, input_size=(28, 28))
+    summary(model, input_size=(28, 28),device=DEVICE)
 
     # Warm-up loop
     print('Started warm-up training...')
@@ -236,6 +243,18 @@ def projected_training(args):
         plt.legend()
 
         plt.show()
+        output_dir = "../plots"
+        plot_name = f"{args['dataset']}_{args['model']}_{args['activation']}_{args['algo']}"
+        if args.get('hidden_sizes'):
+            plot_name += "_hidden_sizes_" + "-".join(map(str, args['hidden_sizes']))
+        if args.get('num_hidden_layers'):
+            plot_name += "_num_hidden_layers_" + "-".join(map(str, args['num_hidden_layers']))
+
+        plot_name += '.png'
+        os.makedirs(output_dir, exist_ok=True)
+        save_path = os.path.join(output_dir, plot_name)
+        plt.savefig(save_path)
+
 
     results = {}
     results['warm_up_losses_batch'] = warm_up_losses[0]
@@ -263,7 +282,8 @@ def main(args):
 
 if __name__ == "__main__": 
     if torch.cuda.is_available():
-        DEVICE = 'cuda:0'
+        DEVICE = 'cuda'
+    print(f"device: {DEVICE}")
 
     args = arg_parser()
 
