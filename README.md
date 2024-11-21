@@ -12,11 +12,13 @@ Example script:
 ```
 cd src 
 python train.py --task projected_training \
---epochs 10 \
---hidden_layers 128 \
---warm_up_epochs 10 \
+--epochs 4 \
+--num_hidden_layers 3 --hidden_sizes 200 200 200 --activation 'tanh' \
+--warm_up_epochs 1 \
 --algo SGD \
---plot_losses         
+--plot_losses \
+--lr 0.01 \
+--seed 42       
 ``` 
 
 Debug mode runs everything only on two batches. To switch to debug mode add '--debug'.
