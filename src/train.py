@@ -1,5 +1,6 @@
 import os 
 import pathlib
+import random
 import pickle
 from datetime import datetime
 from argparse import ArgumentParser, BooleanOptionalAction
@@ -26,7 +27,7 @@ def arg_parser():
     parser.add_argument('--debug', action=BooleanOptionalAction, default=False)
     parser.add_argument('--storage', type=pathlib.Path, default='../storage')
     parser.add_argument('--save_results', action=BooleanOptionalAction, default=True)
-
+    parser.add_argument('--seed', type=int, default=42)
 
     parser.add_argument('--epochs', type=int, default=5, required=True)
     parser.add_argument('--dataset', choices = ['MNIST_5k'], default='MNIST_5k')
@@ -47,6 +48,14 @@ def arg_parser():
     args = parser.parse_args()
     return args
 
+def seed_everything(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
 def get_model(input_size : int, output_size : int, args) -> nn.Module:
     # Model definitions could be moved to a separate file...  
     if args.model == 'MLP':
@@ -60,7 +69,10 @@ def get_model(input_size : int, output_size : int, args) -> nn.Module:
 
                 for hidden_size in hidden_sizes:
                     layers.append(nn.Linear(in_size, hidden_size))
-                    layers.append(nn.ReLU())
+                    if args.activation == 'relu':
+                        layers.append(nn.ReLU())
+                    elif args.activation == 'tanh':
+                        layers.append(nn.Tanh())
                     in_size = hidden_size
                 
                 layers.append(nn.Linear(in_size, output_size).to(DEVICE))
@@ -108,14 +120,16 @@ def projected_step_top(model, loss, criterion, dataset, batch_size, lr):
         vector_to_parameters(vec_params, model.parameters())
         model.zero_grad()
 
-def train(train_loader, model, criterion, optimizer, lr, num_epochs : int, algo : str = 'SGD'):
+def train(train_loader, model, criterion, optimizer, lr, num_epochs : int, algo : str = 'SGD', cur_training_steps = 0):
     losses = []
     per_epoch_losses = []
+    training_steps_per_batch = []
+    training_steps_per_epoch = []
     for epoch in range(num_epochs):
         print(f'Epoch [{epoch + 1}/{num_epochs}]')
-        num_images = 0
         loss_sum = 0.0
         batches = 0.0
+        training_steps_per_epoch.append(cur_training_steps)
         with time_block("Training epoch"):
             for images, labels in train_loader:
                 images = images.to(DEVICE) 
@@ -127,8 +141,9 @@ def train(train_loader, model, criterion, optimizer, lr, num_epochs : int, algo 
                 loss = criterion(outputs, labels)
                 loss_sum += loss.item()
                 batches += 1
-                losses.append(loss.item() / k)
-                num_images += k
+                losses.append(loss.item())
+                training_steps_per_batch.append(cur_training_steps)
+                cur_training_steps += k
 
                 # Backwards pass and optimization
                 if algo == 'SGD':
@@ -143,11 +158,10 @@ def train(train_loader, model, criterion, optimizer, lr, num_epochs : int, algo 
                     projected_step_top(model, loss, criterion, dataset, batch_size=64, lr=lr)
                 else:
                     raise NotImplementedError()
-        print(loss_sum, num_images)
-        print(f'Epoch [{epoch + 1}/{num_epochs}], Loss: {(loss_sum / num_images):.4f}')
-        per_epoch_losses.append(loss_sum / num_images)
+        print(f'Epoch [{epoch + 1}/{num_epochs}], Loss: {(loss_sum / batches):.4f}')
+        per_epoch_losses.append(loss_sum / batches)
 
-    return losses, per_epoch_losses
+    return losses, per_epoch_losses, training_steps_per_batch, training_steps_per_epoch
 
 def eval(test_loader, model):
     model.eval()  
@@ -211,6 +225,7 @@ def projected_training(args):
     warm_up_losses = train(train_loader, model, 
                            criterion, optimizer, 
                            lr, num_epochs=args.warm_up_epochs, algo='SGD')
+    warm_up_training_steps = 0 if len(warm_up_losses[2]) == 0 else warm_up_losses[2][-1]
     print('Finished warm-up training!')
     
     print('Post warm-up evalution...')
@@ -220,7 +235,8 @@ def projected_training(args):
     print('Started training...')
     train_losses = train(train_loader, model, 
                          criterion, optimizer, lr, 
-                         num_epochs=args.epochs, algo=args.algo)
+                         num_epochs=args.epochs, algo=args.algo, 
+                         cur_training_steps=warm_up_training_steps)
     print('Finished training!')
 
     print('Final evaluation')
@@ -228,6 +244,9 @@ def projected_training(args):
 
     per_batch_losses = warm_up_losses[0] + train_losses[0]
     per_epoch_losses = warm_up_losses[1] + train_losses[1]
+    print(warm_up_losses[3][0])
+    training_steps_per_batch = warm_up_losses[2] + train_losses[2]
+    training_steps_per_epoch = warm_up_losses[3] + train_losses[3]
     output_name = f"{args.dataset}_{args.model}_{args.activation}_{args.algo}"
     if args.hidden_sizes:
         output_name += "_hidden_sizes_" + "-".join(map(str, args.hidden_sizes))
@@ -236,15 +255,17 @@ def projected_training(args):
 
     if args.plot_losses:
         plt.figure(1)
-        plt.axvline(x=len(warm_up_losses[0]), color='red', linestyle='--', label="End of warm-up")
-        plt.plot(np.log(per_batch_losses))
+        plt.axvline(x=warm_up_training_steps, color='red', linestyle='--', label="End of warm-up")
+        plt.plot(training_steps_per_batch, np.log(per_batch_losses))
         plt.title('Per Batch Losses (log-scale)')
+        plt.xlabel('Training steps')
         plt.legend()
 
         plt.figure(2)
-        plt.axvline(x=len(warm_up_losses[1]), color='red', linestyle='--', label="End of warm-up")
-        plt.plot(np.log(per_epoch_losses))
+        plt.axvline(x=warm_up_training_steps, color='red', linestyle='--', label="End of warm-up")
+        plt.plot(training_steps_per_epoch, np.log(per_epoch_losses))
         plt.title('Per Epoch Losses (log-scale)')
+        plt.xlabel('Training steps')
         plt.legend()
 
         plt.show()
@@ -287,5 +308,6 @@ if __name__ == "__main__":
     print(f"device: {DEVICE}")
 
     args = arg_parser()
+    seed_everything()
 
     main(args) 
