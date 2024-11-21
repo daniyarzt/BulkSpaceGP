@@ -63,7 +63,7 @@ def iterate_dataset(dataset: Dataset, batch_size: int):
     """Iterate through a dataset, yielding batches of data."""
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
     for batch_X, batch_y in loader:
-        yield batch_X.cuda(), batch_y.cuda() # changed this!
+        yield batch_X.cpu(), batch_y.cpu() # changed this!
 
 
 # def compute_losses(network: nn.Module, loss_functions: List[nn.Module], dataset: Dataset,
@@ -93,8 +93,8 @@ def compute_hvp(network: nn.Module, loss_fn: nn.Module,
     """Compute a Hessian-vector product."""
     p = len(parameters_to_vector(network.parameters()))
     n = len(dataset)
-    hvp = torch.zeros(p, dtype=torch.float, device='cuda')
-    vector = vector.cuda()
+    hvp = torch.zeros(p, dtype=torch.float, device='cpu')
+    # vector = vector.cuda()
     for (X, y) in iterate_dataset(dataset, physical_batch_size):
         loss = loss_fn(network(X), y) / n
         grads = torch.autograd.grad(loss, inputs=network.parameters(), create_graph=True)
@@ -109,7 +109,7 @@ def lanczos(matrix_vector, dim: int, neigs: int):
     (which we can access via matrix-vector products). """
 
     def mv(vec: np.ndarray):
-        gpu_vec = torch.tensor(vec, dtype=torch.float).cuda()
+        gpu_vec = torch.tensor(vec, dtype=torch.float).cpu()
         # TODO: Make universal cuda/cpu 
 
         return matrix_vector(gpu_vec)

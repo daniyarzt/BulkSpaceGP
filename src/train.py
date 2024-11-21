@@ -4,10 +4,7 @@ import pickle
 from datetime import datetime
 from argparse import ArgumentParser, BooleanOptionalAction
 
-import time
-
-
-from utilities import get_hessian_eigenvalues
+from utilities import get_hessian_eigenvalues, timeit, time_block
 from torch.nn.utils import parameters_to_vector, vector_to_parameters
 
 import torch
@@ -83,20 +80,20 @@ def projected_step_bulk(model, loss, criterion, dataset, batch_size, lr):
                                            neigs=10, device=DEVICE)
     evecs.transpose_(1, 0)
     
-    with torch.no_grad():  # Ensure we don’t track these operations for gradient computation
+    with torch.no_grad(): 
         grad = torch.autograd.grad(loss, inputs=model.parameters(), create_graph=True)
         vec_grad = parameters_to_vector(grad)
         step = vec_grad.detach() 
         for vec in evecs:
-            step -= torch.dot(vec_grad, vec) * vec  # Update each parameter by gradient descent
+            step -= torch.dot(vec_grad, vec) * vec
         vec_params = parameters_to_vector(model.parameters())
         vec_params -= step * lr
         vector_to_parameters(vec_params, model.parameters())
         model.zero_grad()
 
 def projected_step_top(model, loss, criterion, dataset, batch_size, lr):
-    evals, evecs = get_hessian_eigenvalues(model, criterion, dataset, 
-                                           physical_batch_size=batch_size, 
+    evals, evecs = get_hessian_eigenvalues(model, criterion, dataset,
+                                           physical_batch_size=batch_size,
                                            neigs=10, device=DEVICE)
     evecs.to(DEVICE).transpose_(1, 0)
     
@@ -105,7 +102,7 @@ def projected_step_top(model, loss, criterion, dataset, batch_size, lr):
         vec_grad = parameters_to_vector(grad).to(DEVICE)
         step = torch.Tensor(vec_grad.shape).to(DEVICE)
         for vec in evecs:
-            step += torch.dot(vec_grad, vec) * vec  # Update each parameter by gradient descent
+            step += torch.dot(vec_grad, vec) * vec
         vec_params = parameters_to_vector(model.parameters())
         vec_params -= step * lr
         vector_to_parameters(vec_params, model.parameters())
@@ -114,38 +111,41 @@ def projected_step_top(model, loss, criterion, dataset, batch_size, lr):
 def train(train_loader, model, criterion, optimizer, lr, num_epochs : int, algo : str = 'SGD'):
     losses = []
     per_epoch_losses = []
+    num_images = 0
     for epoch in range(num_epochs):
-        start_time = time.time() 
         print(f'Epoch [{epoch + 1}/{num_epochs}]')
         loss_sum = 0.0
         batches = 0.0
-        for images, labels in train_loader:
-            images = images.to(DEVICE) 
-            labels = labels.to(DEVICE)
+        with time_block("Training epoch"):
+            for images, labels in train_loader:
+                images = images.to(DEVICE) 
+                labels = labels.to(DEVICE)
+                k = len(images)
 
-            # Forward pass 
-            outputs = model(images).to(DEVICE)
-            loss = criterion(outputs, labels)
-            loss_sum += loss.item()
-            batches += 1
-            losses.append(loss.item())
+                # Forward pass 
+                outputs = model(images).to(DEVICE)
+                loss = criterion(outputs, labels)
+                loss_sum += loss.item()
+                batches += 1
+                losses.append(loss.item() / k)
+                num_images += k
 
-            # Backwards pass and optimization
-            if algo == 'SGD':
-                loss.backward()
-                optimizer.step()
-                optimizer.zero_grad()
-            elif algo == 'Bulk-SGD':
-                dataset = TensorDataset(images, labels)
-                projected_step_bulk(model, loss, criterion, dataset, batch_size=64, lr=lr)
-            elif algo == 'Top-SGD':
-                dataset = TensorDataset(images, labels)
-                projected_step_top(model, loss, criterion, dataset, batch_size=64, lr=lr)
-            else:
-                raise NotImplementedError()
-        epoch_time = time.time() - start_time        
-        print(f'Loss: {(loss_sum / batches):.4f}, Time: {epoch_time:.2f} seconds')
-        per_epoch_losses.append(loss_sum / batches)
+                # Backwards pass and optimization
+                if algo == 'SGD':
+                    loss.backward()
+                    optimizer.step()
+                    optimizer.zero_grad()
+                elif algo == 'Bulk-SGD':
+                    dataset = TensorDataset(images, labels)
+                    projected_step_bulk(model, loss, criterion, dataset, batch_size=64, lr=lr)
+                elif algo == 'Top-SGD':
+                    dataset = TensorDataset(images, labels)
+                    projected_step_top(model, loss, criterion, dataset, batch_size=64, lr=lr)
+                else:
+                    raise NotImplementedError()
+                
+        print(f'Epoch [{epoch + 1}/{num_epochs}], Loss: {(loss_sum / num_images):.4f}')
+        per_epoch_losses.append(loss_sum / num_images)
 
     return losses, per_epoch_losses
 
@@ -175,8 +175,8 @@ def projected_training(args):
     if args.dataset == 'MNIST_5k':
         input_size = 28 * 28
         output_size = 10
-        transform = transforms.Compose([transforms.ToTensor(), 
-                                        transforms.Normalize((0.5,), (0.5,))])  # is this normalization good?
+        transform = transforms.Compose([transforms.ToTensor(),]) 
+                                        #transforms.Normalize((0.,), (1.,))])  # is this normalization good?
         train_dataset = datasets.MNIST(root='./data', 
                                             train=True, 
                                             transform=transform, 
@@ -201,7 +201,7 @@ def projected_training(args):
 
     # Initialize the model, loss_function, and optimizer
     model = get_model(input_size, output_size, args).to(DEVICE)
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss()   
     optimizer = optim.SGD(model.parameters(), lr=lr)
 
     summary(model, input_size=(28, 28),device=DEVICE)
@@ -237,14 +237,14 @@ def projected_training(args):
     if args.plot_losses:
         plt.figure(1)
         plt.axvline(x=len(warm_up_losses[0]), color='red', linestyle='--', label="End of warm-up")
-        plt.plot(per_batch_losses)
-        plt.title('Per Batch Losses')
+        plt.plot(np.log(per_batch_losses))
+        plt.title('Per Batch Losses (log-scale)')
         plt.legend()
 
         plt.figure(2)
         plt.axvline(x=len(warm_up_losses[1]), color='red', linestyle='--', label="End of warm-up")
-        plt.plot(per_epoch_losses)
-        plt.title('Per Epoch Losses')
+        plt.plot(np.log(per_epoch_losses))
+        plt.title('Per Epoch Losses (log-scale)')
         plt.legend()
 
         plt.show()
@@ -257,6 +257,7 @@ def projected_training(args):
 
 
     results = {}
+    results['args'] = args
     results['warm_up_losses_batch'] = warm_up_losses[0]
     results['warm_up_losses_epoch'] = warm_up_losses[1]
     results['train_losses_batch'] = train_losses[0]
