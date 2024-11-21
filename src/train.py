@@ -111,9 +111,9 @@ def projected_step_top(model, loss, criterion, dataset, batch_size, lr):
 def train(train_loader, model, criterion, optimizer, lr, num_epochs : int, algo : str = 'SGD'):
     losses = []
     per_epoch_losses = []
-    num_images = 0
     for epoch in range(num_epochs):
         print(f'Epoch [{epoch + 1}/{num_epochs}]')
+        num_images = 0
         loss_sum = 0.0
         batches = 0.0
         with time_block("Training epoch"):
@@ -143,7 +143,7 @@ def train(train_loader, model, criterion, optimizer, lr, num_epochs : int, algo 
                     projected_step_top(model, loss, criterion, dataset, batch_size=64, lr=lr)
                 else:
                     raise NotImplementedError()
-                
+        print(loss_sum, num_images)
         print(f'Epoch [{epoch + 1}/{num_epochs}], Loss: {(loss_sum / num_images):.4f}')
         per_epoch_losses.append(loss_sum / num_images)
 
