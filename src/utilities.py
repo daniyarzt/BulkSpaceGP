@@ -1,5 +1,7 @@
 ### Copied https://github.com/locuslab/edge-of-stability/blob/github/src/utilities.py
 from typing import List, Tuple, Iterable
+import time
+from contextlib import contextmanager
 
 import numpy as np
 import torch
@@ -65,3 +67,24 @@ def get_hessian_eigenvalues(network: nn.Module, loss_fn: nn.Module, dataset: Dat
     nparams = len(parameters_to_vector((network.parameters())))
     evals, evecs = lanczos(hvp_delta, nparams, neigs=neigs, device = device)
     return evals, evecs.to(device)
+
+def timeit(func):
+    """Decorator that times the execution of a function."""
+    def timed(*args, **kwargs):
+        start_time = time.time()  
+        result = func(*args, **kwargs)  
+        end_time = time.time() 
+        print(f"Function '{func.__name__}' executed in {end_time - start_time:.4f} seconds")
+        return result
+    
+    return timed
+
+@contextmanager
+def time_block(label="Code block"):
+    """Context manager to time a specific block of code."""
+    start_time = time.time()
+    try:
+        yield  # Allow the block of code to execute
+    finally:
+        end_time = time.time()
+        print(f"{label} executed in {end_time - start_time:.4f} seconds")
