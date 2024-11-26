@@ -18,7 +18,8 @@ python train.py --task projected_training \
 --algo SGD \
 --plot_losses \
 --lr 0.01 \
---seed 42       
+--loss MSE \
+--seed 42      
 ``` 
 
 Debug mode runs everything only on two batches. To switch to debug mode add '--debug'.

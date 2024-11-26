@@ -1,3 +1,4 @@
+from ast import Not
 import os 
 import pathlib
 import random
@@ -10,6 +11,7 @@ from torch.nn.utils import parameters_to_vector, vector_to_parameters
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F 
 import torch.optim as optim
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader, Subset, TensorDataset
@@ -33,6 +35,7 @@ def arg_parser():
     parser.add_argument('--dataset', choices = ['MNIST_5k'], default='MNIST_5k')
     parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--lr', type=float, default=0.01)
+    parser.add_argument('--loss', type=str, default='cross_entropy_loss')
 
     # Model parameters 
     parser.add_argument('--model', choices = ['MLP'], default='MLP')
@@ -120,7 +123,7 @@ def projected_step_top(model, loss, criterion, dataset, batch_size, lr):
         vector_to_parameters(vec_params, model.parameters())
         model.zero_grad()
 
-def train(train_loader, model, criterion, optimizer, lr, num_epochs : int, algo : str = 'SGD', cur_training_steps = 0):
+def train(train_loader, model, criterion, optimizer, lr, num_epochs : int, algo : str = 'SGD', cur_training_steps = 0, num_classes = 10):
     losses = []
     per_epoch_losses = []
     training_steps_per_batch = []
@@ -134,6 +137,11 @@ def train(train_loader, model, criterion, optimizer, lr, num_epochs : int, algo 
             for images, labels in train_loader:
                 images = images.to(DEVICE) 
                 labels = labels.to(DEVICE)
+
+                if isinstance(criterion, nn.MSELoss):
+                    target_one_hot = F.one_hot(labels, num_classes=num_classes).float().to(DEVICE)
+                    labels = target_one_hot 
+
                 k = len(images)
 
                 # Forward pass 
@@ -189,6 +197,7 @@ def projected_training(args):
     if args.dataset == 'MNIST_5k':
         input_size = 28 * 28
         output_size = 10
+        num_classes = 10
         transform = transforms.Compose([transforms.ToTensor(),]) 
                                         #transforms.Normalize((0.,), (1.,))])  # is this normalization good?
         train_dataset = datasets.MNIST(root='./data', 
@@ -215,7 +224,12 @@ def projected_training(args):
 
     # Initialize the model, loss_function, and optimizer
     model = get_model(input_size, output_size, args).to(DEVICE)
-    criterion = nn.CrossEntropyLoss()   
+    if args.loss == 'cross_entropy_loss':
+        criterion = nn.CrossEntropyLoss()   
+    elif args.loss == 'MSE':
+        criterion = nn.MSELoss()
+    else:
+        raise NotImplementedError()
     optimizer = optim.SGD(model.parameters(), lr=lr)
 
     summary(model, input_size=(28, 28),device=DEVICE)
@@ -224,7 +238,8 @@ def projected_training(args):
     print('Started warm-up training...')
     warm_up_losses = train(train_loader, model, 
                            criterion, optimizer, 
-                           lr, num_epochs=args.warm_up_epochs, algo='SGD')
+                           lr, num_epochs=args.warm_up_epochs, algo='SGD', 
+                           num_classes=num_classes)
     warm_up_training_steps = 0 if len(warm_up_losses[2]) == 0 else warm_up_losses[2][-1]
     print('Finished warm-up training!')
     
