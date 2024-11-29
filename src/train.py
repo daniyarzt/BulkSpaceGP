@@ -42,7 +42,6 @@ def arg_parser():
     # Model parameters 
     parser.add_argument('--model', choices = ['MLP'], default='MLP')
     parser.add_argument('--hidden_sizes', type=int, nargs='+', required=False)
-    parser.add_argument('--num_hidden_layers', type=int, nargs='+', required=False)
     parser.add_argument('--activation', choices = ['relu','tanh'], default='relu')
 
     # projected_training args
@@ -50,7 +49,7 @@ def arg_parser():
     parser.add_argument('--algo', choices=['SGD', 'Bulk-SGD', 'Top-SGD'], default='SGD')
     parser.add_argument('--plot_losses', action=BooleanOptionalAction, default=False)
 
-    # tmp_bulk_cl_task 
+    # tmp_proj_cl_task 
     parser.add_argument('--n_experiences', type=int, default=2, required=False)
 
     args = parser.parse_args()
@@ -263,16 +262,17 @@ def projected_training(args):
     print('Final evaluation')
     final_accuracy = eval(test_loader, model)
 
+    save_results(args, warm_up_losses, train_losses, warm_up_accuracy, final_accuracy, warm_up_training_steps)
+
+def save_results(args, warm_up_losses, train_losses, warm_up_accuracy, final_accuracy, warm_up_training_steps, custom_name):
     per_batch_losses = warm_up_losses[0] + train_losses[0]
     per_epoch_losses = warm_up_losses[1] + train_losses[1]
     print(warm_up_losses[3][0])
     training_steps_per_batch = warm_up_losses[2] + train_losses[2]
     training_steps_per_epoch = warm_up_losses[3] + train_losses[3]
-    output_name = f"{args.dataset}_{args.model}_{args.activation}_{args.algo}"
+    output_name = f"{args.dataset}_{args.task}_{args.model}_{args.activation}_{args.algo}_{custom_name}"
     if args.hidden_sizes:
-        output_name += "_hidden_sizes_" + "-".join(map(str, args.hidden_sizes))
-    if args.num_hidden_layers:
-        output_name += "_num_hidden_layers_" + "-".join(map(str, args.num_hidden_layers))
+        output_name += "_hid_sizes_" + "-".join(map(str, args.hidden_sizes))
 
     if args.plot_losses:
         plt.figure(1)
@@ -281,13 +281,14 @@ def projected_training(args):
         plt.title('Per Batch Losses (log-scale)')
         plt.xlabel('Training steps')
         plt.legend()
-
+        
         plt.figure(2)
         plt.axvline(x=warm_up_training_steps, color='red', linestyle='--', label="End of warm-up")
         plt.plot(training_steps_per_epoch, np.log(per_epoch_losses))
         plt.title('Per Epoch Losses (log-scale)')
         plt.xlabel('Training steps')
         plt.legend()
+        
 
         plt.show()
         output_dir = "../plots"
@@ -314,12 +315,12 @@ def projected_training(args):
             pickle.dump(results, file)
         print(f'Results saved in file_name!')
 
-def tmp_bulk_cl_task(args):
-    """5-epochs per each experience: warm-up-epochs x SGD + epochs x Bulk-SGD
+def tmp_proj_cl_task(args):
+    """each experience: warm-up-epochs x SGD + epochs x algo
     -------
-    Run with the following command: python train.py --task tmp_bulk_cl_task \
+    Run with the following command: python train.py --task tmp_proj_cl_task \
     --epochs 4 \
-    --num_hidden_layers 3 --hidden_sizes 200 200 200 --activation 'tanh' \
+    --hidden_sizes 200 200 200 --activation 'tanh' \
     --warm_up_epochs 1 \
     --algo Top-SGD \
     --plot_losses \
@@ -391,14 +392,16 @@ def tmp_bulk_cl_task(args):
             train_dataloader = DataLoader(dataset=partial_dataset, batch_size=self.train_mb_size, 
                                           shuffle=True, pin_memory=True)
 
-            warm_up_epochs = 1
-            train_epochs = 4
+            warm_up_epochs = args.warm_up_epochs
+            train_epochs = args.epochs
             
             
             print('Started warm-up training...')
-            train(train_dataloader, self.model, self._criterion, self.optimizer, self.lr, warm_up_epochs, 'SGD', 0)
+            warm_up_losses = train(train_dataloader, self.model, self._criterion, self.optimizer, self.lr, warm_up_epochs, 'SGD', 0)
+            warm_up_training_steps = 0 if len(warm_up_losses[2]) == 0 else warm_up_losses[2][-1]
             print('Started training...')
-            train(train_dataloader, self.model, self._criterion, self.optimizer, self.lr, train_epochs, args.algo, 0)
+            train_losses = train(train_dataloader, self.model, self._criterion, self.optimizer, self.lr, train_epochs, args.algo, cur_training_steps=warm_up_training_steps)
+            return warm_up_losses, train_losses, warm_up_training_steps
 
     # Initialize the model, loss_function, and optimizer, strategy
     model = get_model(input_size, output_size, args).to(DEVICE)
@@ -407,24 +410,94 @@ def tmp_bulk_cl_task(args):
     custom_cl_strategy = CustomCLStrategy(model, optimizer, criterion, lr, train_mb_size = batch_size, train_epochs = 5, eval_mb_size = batch_size, device = DEVICE, )
 
     # Training loop 
-    for experience in train_stream:
-        print("Start of experience ", experience)
+    all_warm_up_losses = []
+    all_train_losses = []
+    all_warm_up_training_steps = []
+    experience_ids = [] 
+    cumulative_steps = 0  # Tracks total training steps across experiences
 
-        custom_cl_strategy.train(experience)
-        print('Training completed')
+    for exp_id, experience in enumerate(train_stream):
+        print(f"Start of experience {exp_id + 1}: {experience}")
 
+        # Train on current experience
+        warm_up_losses, train_losses, warm_up_training_steps = custom_cl_strategy.train(experience)
+        print("Training completed.")
+        all_warm_up_losses.append(warm_up_losses)
+        all_train_losses.append(train_losses)
+        all_warm_up_training_steps.append(warm_up_training_steps)
         print('Computing accuracy on the current test set')
         # results_naive.append(naive_strategy.eval(benchmark.test_stream))
+    save_results_cl(args, all_warm_up_losses,all_train_losses)
+    final_accuracy = custom_cl_strategy.eval(test_stream)
+    print(final_accuracy)
 
-    custom_cl_strategy.eval(test_stream)
+def save_results_cl(args, all_warm_up_losses, all_train_losses, custom_name = ""):
+    num_experiences = len(all_warm_up_losses)
+    fig, axes = plt.subplots(2, num_experiences, figsize=(5 * num_experiences, 4), constrained_layout=True)
+    if num_experiences == 1:
+        axes = [[axes[0]], [axes[1]]]
+    output_name = f"CL_{args.dataset}_{args.task}_{args.model}_{args.activation}_{args.algo}_{custom_name}"
+    if args.hidden_sizes:
+        output_name += "_hid_sizes_" + "-".join(map(str, args.hidden_sizes))
+
+        for i, (warm_up_losses, train_losses) in enumerate(zip(all_warm_up_losses, all_train_losses)):
+            # Combine batch and epoch losses
+            per_batch_losses = warm_up_losses[0] + train_losses[0]
+            per_epoch_losses = warm_up_losses[1] + train_losses[1]
+
+            # Combine training steps
+            training_steps_per_batch = warm_up_losses[2] + train_losses[2]
+            training_steps_per_epoch = warm_up_losses[3] + train_losses[3]
+
+            # Determine end of warm-up step
+            warm_up_training_steps = 0 if len(warm_up_losses[2]) == 0 else warm_up_losses[2][-1]
+
+            # First row: Per Batch Losses
+            axes[0][i].axvline(x=warm_up_training_steps, color='red', linestyle='--', label="End of warm-up")
+            axes[0][i].plot(training_steps_per_batch, np.log1p(per_batch_losses), label=f"Experience {i + 1}")
+            axes[0][i].set_title(f"Per Batch Losses (Exp {i + 1})")
+            axes[0][i].set_xlabel("Training Step")
+            axes[0][i].set_ylabel("Log Loss")
+            axes[0][i].grid(True)
+            axes[0][i].legend()
+
+            # Second row: Per Epoch Losses
+            axes[1][i].axvline(x=warm_up_training_steps, color='red', linestyle='--', label="End of warm-up")
+            axes[1][i].plot(training_steps_per_epoch, np.log1p(per_epoch_losses), label=f"Experience {i + 1}")
+            axes[1][i].set_title(f"Per Epoch Losses (Exp {i + 1})")
+            axes[1][i].set_xlabel("Training Step")
+            axes[1][i].set_ylabel("Log Loss")
+            axes[1][i].grid(True)
+            axes[1][i].legend()
+
+    plt.suptitle("Losses (log scale)")
+    plt.show()
+    output_dir = "../plots"
+    plot_name = output_name+ '.png'
+    os.makedirs(output_dir, exist_ok=True)
+    save_path = os.path.join(output_dir, plot_name)
+    plt.savefig(save_path)
+
+    results = {}
+    results['args'] = args 
+    results['all_train_losses'] = all_train_losses 
+    results['all_warm_up_losses'] = all_warm_up_losses
+ 
+    if args.save_results and not args.debug:
+        current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+        file_name = f'{args.storage}/projected_training_{current_time}_{output_name}.pkl'
+        with open(file_name, "wb") as file:
+            pickle.dump(results, file)
+        print(f'Results saved in file_name!')
+
 
 def main(args):
     print(f'DEVICE = {DEVICE}')
 
     if args.task == 'projected_training':
         projected_training(args)
-    elif args.task == 'tmp_bulk_cl_task':
-        tmp_bulk_cl_task(args)
+    elif args.task == 'tmp_proj_cl_task':
+        tmp_proj_cl_task(args)
     else:
         raise NotImplementedError()        
 
