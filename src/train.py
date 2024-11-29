@@ -582,15 +582,16 @@ def proj_on_prev_exp_cl_task(args):
         
 
         # results_naive.append(naive_strategy.eval(benchmark.test_stream))
-    save_results_cl(args, all_warm_up_losses,all_train_losses)
+    
     final_accuracy = custom_cl_strategy.eval(test_stream)
+    save_results_cl(args, all_warm_up_losses,all_train_losses,final_accuracy)
 
-def save_results_cl(args, all_warm_up_losses, all_train_losses, custom_name = ""):
+def save_results_cl(args, all_warm_up_losses, all_train_losses,final_accuracy=0):
     num_experiences = len(all_warm_up_losses)
     fig, axes = plt.subplots(2, num_experiences, figsize=(5 * num_experiences, 4), constrained_layout=True)
     if num_experiences == 1:
         axes = [[axes[0]], [axes[1]]]
-    output_name = f"CL_{args.dataset}_{args.task}_{args.model}_{args.activation}_{args.algo}_{custom_name}"
+    output_name = f"CL_{args.dataset}_{args.task}_{args.model}_{args.activation}_{args.algo}_seed_{args.seed}"
     if args.hidden_sizes:
         output_name += "_hid_sizes_" + "-".join(map(str, args.hidden_sizes))
 
@@ -636,10 +637,11 @@ def save_results_cl(args, all_warm_up_losses, all_train_losses, custom_name = ""
     results['args'] = args 
     results['all_train_losses'] = all_train_losses 
     results['all_warm_up_losses'] = all_warm_up_losses
+    results['final_accuracy'] =final_accuracy
  
     if args.save_results and not args.debug:
         current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-        file_name = f'{args.storage}/projected_training_{current_time}_{output_name}.pkl'
+        file_name = f'{args.storage}/projected_training_{output_name}.pkl'
         with open(file_name, "wb") as file:
             pickle.dump(results, file)
         print(f'Results saved in file_name!')
