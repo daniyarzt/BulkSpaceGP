@@ -19,6 +19,8 @@ import numpy as np
 from torchsummary import summary
 import matplotlib.pyplot as plt
 
+from avalanche.benchmarks import PermutedMNIST
+from avalanche.training.templates import SupervisedTemplate
 
 DEVICE = 'cpu'
 
@@ -31,7 +33,7 @@ def arg_parser():
     parser.add_argument('--save_results', action=BooleanOptionalAction, default=True)
     parser.add_argument('--seed', type=int, default=42)
 
-    parser.add_argument('--epochs', type=int, default=5, required=True)
+    parser.add_argument('--epochs', type=int, default=5, required=False)
     parser.add_argument('--dataset', choices = ['MNIST_5k'], default='MNIST_5k')
     parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--lr', type=float, default=0.01)
@@ -47,6 +49,9 @@ def arg_parser():
     parser.add_argument('--warm_up_epochs', type=int, default=0, required=False)
     parser.add_argument('--algo', choices=['SGD', 'Bulk-SGD', 'Top-SGD'], default='SGD')
     parser.add_argument('--plot_losses', action=BooleanOptionalAction, default=False)
+
+    # tmp_bulk_cl_task 
+    parser.add_argument('--n_experiences', type=int, default=2, required=False)
 
     args = parser.parse_args()
     return args
@@ -134,7 +139,8 @@ def train(train_loader, model, criterion, optimizer, lr, num_epochs : int, algo 
         batches = 0.0
         training_steps_per_epoch.append(cur_training_steps)
         with time_block("Training epoch"):
-            for images, labels in train_loader:
+            for batch in train_loader:
+                images, labels, *rest = batch
                 images = images.to(DEVICE) 
                 labels = labels.to(DEVICE)
 
@@ -308,11 +314,117 @@ def projected_training(args):
             pickle.dump(results, file)
         print(f'Results saved in file_name!')
 
+def tmp_bulk_cl_task(args):
+    """5-epochs per each experience: warm-up-epochs x SGD + epochs x Bulk-SGD
+    -------
+    Run with the following command: python train.py --task tmp_bulk_cl_task \
+    --epochs 4 \
+    --num_hidden_layers 3 --hidden_sizes 200 200 200 --activation 'tanh' \
+    --warm_up_epochs 1 \
+    --algo Top-SGD \
+    --plot_losses \
+    --lr 0.01 \
+    --seed 125 \
+    --loss MSE
+    -------
+    Very slow!! -> Change the train_subset_size
+
+    """
+
+    # Hyperparameters
+    batch_size = args.batch_size
+    lr = args.lr
+    train_subset_size = 200
+
+    # Load the dataset 
+    benchmark = PermutedMNIST(n_experiences = args.n_experiences)
+    train_stream = benchmark.train_stream
+    test_stream = benchmark.test_stream
+    input_size = 28 * 28
+    output_size = 10
+
+    for experience in train_stream:
+        print("Start of task ", experience.task_label)
+        print('Classes in this task:', experience.classes_in_this_experience)
+
+        current_training_set = experience.dataset
+        print('Task {}'.format(experience.task_label))
+        print('This task contains', train_subset_size, 'training examples')
+
+        current_test_set = test_stream[experience.current_experience].dataset
+        print('This task contains', len(current_test_set), 'test examples')
+
+    # Define CustomCLStrategy
+    class CustomCLStrategy(SupervisedTemplate):
+        """Mostly copied from https://avalanche-api.continualai.org/en/v0.5.0/_modules/avalanche/training/supervised/strategy_wrappers.html#Naive"""
+        
+        def __init__(
+            self,
+            *,
+            model,
+            optimizer,
+            criterion,
+            lr,
+            train_mb_size,
+            train_epochs,
+            eval_mb_size,
+            device,
+            **base_kwargs
+        ):
+            super().__init__(
+                model=model,
+                optimizer=optimizer,
+                criterion=criterion,
+                train_mb_size=train_mb_size,
+                train_epochs=train_epochs,
+                eval_mb_size=eval_mb_size,
+                device=device,            
+                **base_kwargs
+            )
+            self.lr = lr
+            self._criterion = criterion
+
+        def train(self, experience): 
+            train_dataset = experience.dataset
+            subset_indices = np.random.choice(len(train_dataset), train_subset_size, replace=False)
+            partial_dataset = Subset(train_dataset, subset_indices)
+            train_dataloader = DataLoader(dataset=partial_dataset, batch_size=self.train_mb_size, 
+                                          shuffle=True, pin_memory=True)
+
+            warm_up_epochs = 1
+            train_epochs = 4
+            
+            
+            print('Started warm-up training...')
+            train(train_dataloader, self.model, self._criterion, self.optimizer, self.lr, warm_up_epochs, 'SGD', 0)
+            print('Started training...')
+            train(train_dataloader, self.model, self._criterion, self.optimizer, self.lr, train_epochs, args.algo, 0)
+
+    # Initialize the model, loss_function, and optimizer, strategy
+    model = get_model(input_size, output_size, args).to(DEVICE)
+    criterion = nn.CrossEntropyLoss()   
+    optimizer = optim.SGD(model.parameters(), lr=lr)
+    custom_cl_strategy = CustomCLStrategy(model, optimizer, criterion, lr, train_mb_size = batch_size, train_epochs = 5, eval_mb_size = batch_size, device = DEVICE, )
+
+    # Training loop 
+    for experience in train_stream:
+        print("Start of experience ", experience)
+
+        custom_cl_strategy.train(experience)
+        print('Training completed')
+
+        print('Computing accuracy on the current test set')
+        # results_naive.append(naive_strategy.eval(benchmark.test_stream))
+
+    custom_cl_strategy.eval(test_stream)
+
 def main(args):
     print(f'DEVICE = {DEVICE}')
 
     if args.task == 'projected_training':
         projected_training(args)
+    elif args.task == 'tmp_bulk_cl_task':
+        tmp_bulk_cl_task(args)
     else:
         raise NotImplementedError()        
 
