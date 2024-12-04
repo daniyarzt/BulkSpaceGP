@@ -25,3 +25,7 @@ python train.py --task projected_training \
 Debug mode runs everything only on two batches. To switch to debug mode add '--debug'.
 
 For other parameters see `src/train.py -> arg_parser()`.
+
+# Using WANDB 
+
+Checkout [Quickstart](https://docs.wandb.ai/quickstart). All you need to do is create account and login (wandb login). There are no logs in `--debug` mode. Also, if you want to disable loggin use `wandb offline`. Then go to website and see all the nice graphs :) 
