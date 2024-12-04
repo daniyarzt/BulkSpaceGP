@@ -1,8 +1,10 @@
 from ast import Not
+from doctest import debug
 import os 
 import pathlib
 import random
 import pickle
+import json
 from datetime import datetime
 from argparse import ArgumentParser, BooleanOptionalAction
 
@@ -19,6 +21,7 @@ import numpy as np
 from torchsummary import summary
 import matplotlib.pyplot as plt
 
+import wandb
 
 DEVICE = 'cpu'
 
@@ -151,6 +154,8 @@ def train(train_loader, model, criterion, optimizer, lr, num_epochs : int, algo 
                 batches += 1
                 losses.append(loss.item())
                 training_steps_per_batch.append(cur_training_steps)
+                wandb.log({'loss_mb' : loss.item(), 'training_step' : cur_training_steps});
+
                 cur_training_steps += k
 
                 # Backwards pass and optimization
@@ -167,6 +172,7 @@ def train(train_loader, model, criterion, optimizer, lr, num_epochs : int, algo 
                 else:
                     raise NotImplementedError()
         print(f'Epoch [{epoch + 1}/{num_epochs}], Loss: {(loss_sum / batches):.4f}')
+        wandb.log({'loss' : (loss_sum / batches)})
         per_epoch_losses.append(loss_sum / batches)
 
     return losses, per_epoch_losses, training_steps_per_batch, training_steps_per_epoch
@@ -186,6 +192,7 @@ def eval(test_loader, model):
             correct += (predicted == labels).sum().item()
 
         print(f'Accuracy on the test set: {100 * correct / total:.2f}%')
+        wandb.log({'Accuracy' : 100 * correct / total})
     return 100 * correct / total
 
 def projected_training(args):
@@ -224,6 +231,7 @@ def projected_training(args):
 
     # Initialize the model, loss_function, and optimizer
     model = get_model(input_size, output_size, args).to(DEVICE)
+    wandb.watch(model, log_graph=True)
     if args.loss == 'cross_entropy_loss':
         criterion = nn.CrossEntropyLoss()   
     elif args.loss == 'MSE':
@@ -259,7 +267,6 @@ def projected_training(args):
 
     per_batch_losses = warm_up_losses[0] + train_losses[0]
     per_epoch_losses = warm_up_losses[1] + train_losses[1]
-    print(warm_up_losses[3][0])
     training_steps_per_batch = warm_up_losses[2] + train_losses[2]
     training_steps_per_epoch = warm_up_losses[3] + train_losses[3]
     output_name = f"{args.dataset}_{args.model}_{args.activation}_{args.algo}"
@@ -293,7 +300,7 @@ def projected_training(args):
 
 
     results = {}
-    results['args'] = args
+    results['args'] = str(vars(args))
     results['warm_up_losses_batch'] = warm_up_losses[0]
     results['warm_up_losses_epoch'] = warm_up_losses[1]
     results['train_losses_batch'] = train_losses[0]
@@ -303,12 +310,31 @@ def projected_training(args):
 
     if args.save_results and not args.debug:
         current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-        file_name = f'{args.storage}/projected_training_{current_time}_{output_name}.pkl'
-        with open(file_name, "wb") as file:
+        file_name_pickle = f'{args.storage}/projected_training_{current_time}_{output_name}.pkl'
+        with open(file_name_pickle, "wb") as file:
             pickle.dump(results, file)
-        print(f'Results saved in file_name!')
+        file_name_json = f'{args.storage}/projected_training_{current_time}_{output_name}.json'
+        with open(file_name_json, 'w') as json_file:
+            json.dump(results, json_file, indent=4)  
+        print(f'Results saved in {file_name_pickle, file_name_json}!')
+
+        # saving to wandb
+        artifact = wandb.Artifact(name = "results", type = "dict")
+        artifact.add_file(local_path = file_name_pickle, name = "results_pickle")
+        artifact.add_file(local_path = file_name_json, name = "results_json")
+        artifact.save()
+
 
 def main(args):
+    if not args.debug:
+        wandb_mode = "online"
+    else:
+        wandb_mode = "disabled"
+    wandb.init(
+        project="ETH-DL-Project",
+        config=args,
+        mode=wandb_mode
+    )
     print(f'DEVICE = {DEVICE}')
 
     if args.task == 'projected_training':
@@ -316,6 +342,7 @@ def main(args):
     else:
         raise NotImplementedError()        
 
+    wandb.finish()
 
 if __name__ == "__main__": 
     if torch.cuda.is_available():
