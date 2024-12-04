@@ -3,3 +3,4 @@ src/data
 storage
 plots
 edge-of-stability
+src/wandb
