@@ -33,7 +33,7 @@ def train_ewc(config, benchmark_id):
     benchmark = benchmark_id
 
     # Create the model and EWC strategy with config-defined parameters
-    model = SimpleMLP(num_classes=benchmark.n_classes)
+    model = SimpleMLP(num_classes=benchmark.n_classes, hidden_layers=2)
     optimizer = SGD(model.parameters(), lr=config["lr"], momentum=config["momentum"])
     strategy = EWC(
         model=model,
@@ -54,22 +54,25 @@ def train_ewc(config, benchmark_id):
     
     results = strategy.eval(benchmark.test_stream)
 
+    # get the trace of the tensor results[x]
+    confusion_trace = torch.trace(results["ConfusionMatrix_Stream/eval_phase/test_stream"]).item()
+
     # Cannot store tensor objects in Ray Tune
     #results["ConfusionMatrix_Stream/eval_phase/test_stream"] = results["ConfusionMatrix_Stream/eval_phase/test_stream"].tolist()
-    selected_results = {"accuracy" : results["Top1_Acc_Exp/eval_phase/test_stream/Task000/Exp001"]}
+    selected_results = {"accuracy" : results["Top1_Acc_Exp/eval_phase/test_stream/Task000/Exp001"], "confusion_trace" : confusion_trace}
     # Report accuracy for tuning purposes
     train.report(selected_results)
 
 # Define the hyperparameter search space
 search_space = {
-    "lr": tune.loguniform(1e-4, 1e-1),
-    "momentum": tune.uniform(0.5, 0.9),
-    "train_mb_size": tune.choice([100]),
-    "ewc_lambda": tune.choice([100, 500, 1000, 2000, 5000])
+    "lr": tune.loguniform(1e-5, 1e-3),
+    "momentum": tune.uniform(0, 0.9),
+    "train_mb_size": tune.choice([35]),
+    "ewc_lambda": tune.uniform(10, 5000)
 }
 
 max_num_epochs = 5
-num_samples = 5
+num_samples = 10
 
 scheduler = ASHAScheduler(
     max_t=max_num_epochs,
@@ -82,7 +85,7 @@ tuner = tune.Tuner(
         resources={"cpu": 8, "gpu": 0}
     ),
     tune_config=tune.TuneConfig(
-        metric="accuracy",
+        metric="confusion_trace",
         mode="min",
         scheduler=scheduler,
         num_samples=num_samples,
