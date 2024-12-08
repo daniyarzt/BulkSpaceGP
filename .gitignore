@@ -4,3 +4,10 @@ storage
 plots
 edge-of-stability
 src/wandb
+.gitignore
+Lib/
+Scripts/
+Include/
+etc/
+share/
+tb_data/
