@@ -154,7 +154,7 @@ def train(train_loader, model, criterion, optimizer, lr, num_epochs : int, algo 
                 batches += 1
                 losses.append(loss.item())
                 training_steps_per_batch.append(cur_training_steps)
-                wandb.log({'loss_mb' : loss.item(), 'training_step' : cur_training_steps});
+                wandb.log({'loss_mb' : loss.item(), 'training_step' : cur_training_steps})
 
                 cur_training_steps += k
 
@@ -313,7 +313,7 @@ def projected_training(args):
         file_name_pickle = f'{args.storage}/projected_training_{current_time}_{output_name}.pkl'
         with open(file_name_pickle, "wb") as file:
             pickle.dump(results, file)
-        file_name_json = f'{args.storage}/projected_training_{current_time}_{output_name}.json'
+        file_name_json = os.path.join(args.storage, f"projected_training_{current_time}_{output_name}.json")
         with open(file_name_json, 'w') as json_file:
             json.dump(results, json_file, indent=4)  
         print(f'Results saved in {file_name_pickle, file_name_json}!')
