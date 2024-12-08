@@ -9,6 +9,7 @@ from datetime import datetime
 from argparse import ArgumentParser, BooleanOptionalAction
 
 from utilities import get_hessian_eigenvalues, timeit, time_block
+from proj_optimizers import BulkSGD, TopSGD
 from torch.nn.utils import parameters_to_vector, vector_to_parameters
 
 import torch
@@ -30,7 +31,7 @@ def arg_parser():
 
     parser.add_argument('--task', type=str, required=True)
     parser.add_argument('--debug', action=BooleanOptionalAction, default=False)
-    parser.add_argument('--storage', type=pathlib.Path, default='../storage')
+    parser.add_argument('--storage', type=pathlib.Path, default=os.path.join("..", "storage"))
     parser.add_argument('--save_results', action=BooleanOptionalAction, default=True)
     parser.add_argument('--seed', type=int, default=42)
 
@@ -164,11 +165,18 @@ def train(train_loader, model, criterion, optimizer, lr, num_epochs : int, algo 
                     optimizer.step()
                     optimizer.zero_grad()
                 elif algo == 'Bulk-SGD':
+                    loss.backward()
                     dataset = TensorDataset(images, labels)
-                    projected_step_bulk(model, loss, criterion, dataset, batch_size=64, lr=lr)
+                    # projected_step_bulk(model, loss, criterion, dataset, batch_size=64, lr=lr)
+                    optimizer.step(model, criterion, dataset)
+                    optimizer.zero_grad()
                 elif algo == 'Top-SGD':
+                    loss.backward()
                     dataset = TensorDataset(images, labels)
-                    projected_step_top(model, loss, criterion, dataset, batch_size=64, lr=lr)
+                    # projected_step_top(model, loss, criterion, dataset, batch_size=64, lr=lr)
+                    optimizer.step(model, criterion, dataset)
+                    optimizer.zero_grad()
+                    
                 else:
                     raise NotImplementedError()
         print(f'Epoch [{epoch + 1}/{num_epochs}], Loss: {(loss_sum / batches):.4f}')
@@ -253,7 +261,10 @@ def projected_training(args):
     
     print('Post warm-up evalution...')
     warm_up_accuracy = eval(test_loader, model)   
-
+    if args.algo == "Bulk-SGD":
+        optimizer = BulkSGD(model.parameters(), batch_size=batch_size, device=DEVICE)
+    if args.algo == "Top-SGD":
+        optimizer = TopSGD(model.parameters(), batch_size=batch_size, device=DEVICE)
     # Training loop 
     print('Started training...')
     train_losses = train(train_loader, model, 
@@ -310,7 +321,7 @@ def projected_training(args):
 
     if args.save_results and not args.debug:
         current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-        file_name_pickle = f'{args.storage}/projected_training_{current_time}_{output_name}.pkl'
+        file_name_pickle = os.path.join(args.storage, f"projected_training_{current_time}_{output_name}.pkl")
         with open(file_name_pickle, "wb") as file:
             pickle.dump(results, file)
         file_name_json = os.path.join(args.storage, f"projected_training_{current_time}_{output_name}.json")
