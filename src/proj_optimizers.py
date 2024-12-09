@@ -19,26 +19,22 @@ class BulkSGD(torch.optim.Optimizer):
                 params.append(p.data.view(-1))
                 grads.append(p.grad.data.view(-1))
 
-    def step(self, model, criterion, dataset):
+    @torch.no_grad()
+    def step(self):
         for group in self.param_groups:
-            params: List[torch.Tensor] = []
-            grads: List[torch.Tensor] = []
-            self._init_group(group, params, grads)
-            vec_params = torch.cat(params).to(self.device)
-            vec_grad = torch.cat(grads).to(self.device)
-            
-            _, evecs = get_hessian_eigenvalues(model, criterion, dataset,
-                                               physical_batch_size=self.batch_size, 
-                                               neigs=10, device=self.device)
-            
-            evecs.transpose_(1, 0)
-
-            step = vec_grad.detach() 
-            with torch.no_grad():
-                for vec in evecs:
-                    step -= torch.dot(step, vec) * vec
-                vec_params.add_(step, alpha=-group['lr'])
-                vector_to_parameters(vec_params, group["params"])
+            vec_params = parameters_to_vector([p for p in group["params"] if p.grad is not None]).to(self.device)
+            vec_grad = parameters_to_vector([p.grad for p in group["params"] if p.grad is not None]).to(self.device)
+            projections = (self.evecs @ vec_grad.unsqueeze(1)).squeeze(1)
+            vec_grad -= (projections.unsqueeze(0) @ self.evecs).squeeze(0)
+            vec_params.add_(vec_grad, alpha=-group['lr'])
+            vector_to_parameters(vec_params, group["params"])
+    
+    def calculate_evecs(self, model, criterion, dataset):
+        with torch.enable_grad():
+                _, self.evecs = get_hessian_eigenvalues(model, criterion, dataset,
+                                                   physical_batch_size=self.batch_size,
+                                                   neigs=10, device=self.device)
+                self.evecs.transpose_(1, 0)
 
 
 class TopSGD(torch.optim.Optimizer):
@@ -56,23 +52,19 @@ class TopSGD(torch.optim.Optimizer):
                 params.append(p.data.view(-1))
                 grads.append(p.grad.data.view(-1))
 
-    def step(self, model, criterion, dataset):
+    @torch.no_grad()
+    def step(self):
         for group in self.param_groups:
-            params: List[torch.Tensor] = []
-            grads: List[torch.Tensor] = []
-            self._init_group(group, params, grads)
-            vec_params = torch.cat(params).to(self.device)
-            vec_grad = torch.cat(grads).to(self.device)
-            
-            _, evecs = get_hessian_eigenvalues(model, criterion, dataset,
-                                               physical_batch_size=self.batch_size, 
-                                               neigs=10, device=self.device)
-            
-            evecs.transpose_(1, 0)
+            vec_params = parameters_to_vector([p for p in group["params"] if p.grad is not None]).to(self.device)
+            vec_grad = parameters_to_vector([p.grad for p in group["params"] if p.grad is not None]).to(self.device)
+            projections = (self.evecs @ vec_grad.unsqueeze(1)).squeeze(1)
+            vec_grad = (projections.unsqueeze(0) @ self.evecs).squeeze(0)
+            vec_params.add_(vec_grad, alpha=-group['lr'])
+            vector_to_parameters(vec_params, group["params"])
 
-            step = torch.Tensor(vec_grad.shape).to(self.device)
-            with torch.no_grad():
-                for vec in evecs:
-                    step += torch.dot(step, vec) * vec
-                vec_params.add_(step, alpha=-group['lr'])
-                vector_to_parameters(vec_params, group["params"])
+    def calculate_evecs(self, model, criterion, dataset):
+        with torch.enable_grad():
+            _, self.evecs = get_hessian_eigenvalues(model, criterion, dataset,
+                                                    physical_batch_size=self.batch_size,
+                                                    neigs=10, device=self.device)
+        self.evecs.transpose_(1, 0)
