@@ -4,7 +4,7 @@ import torch.optim as optim
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader, Subset, TensorDataset
 import numpy as np
-from utilities import get_hessian_eigenvalues
+from src.utilities import get_hessian_eigenvalues
 from torch.nn.utils import parameters_to_vector, vector_to_parameters
 
 # Define the MLP model
