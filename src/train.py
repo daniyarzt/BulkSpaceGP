@@ -176,7 +176,7 @@ def train(train_loader, model, criterion, optimizer, lr, num_epochs : int, algo 
                     dataset = TensorDataset(images, labels)
                     # projected_step_top(model, loss, criterion, dataset, batch_size=64, lr=lr)
                     optimizer.calculate_evecs(model, criterion, dataset)
-                    optimizer.step(model, criterion, dataset)
+                    optimizer.step()
                     optimizer.zero_grad()
                     
                 else:
