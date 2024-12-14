@@ -78,6 +78,59 @@ def get_hessian_eigenvalues(network: nn.Module, loss_fn: nn.Module, dataset: Dat
     return evals, evecs.to(device)
 
 # ======================================================
+# Space Overlap Utilities
+# ======================================================
+
+def overlap_top_direct(top_evecs1, top_evecs2, device = "cpu"):
+    """
+        https://arxiv.org/abs/1812.04754 formula (5) using norm of projection.
+        given two tensors shapes (k, d), k - dim of top space, d - dim of model.    
+    """
+    top_evecs1 = top_evecs1.to(device) 
+    top_evecs2 = top_evecs2.to(device)
+    assert len(top_evecs1.shape) == 2 and top_evecs1.shape == top_evecs2.shape
+    k = top_evecs1.shape[0]
+
+    dot_products = (top_evecs1 @ top_evecs2.T)
+    projections =  (dot_products @ top_evecs1)
+    frobenius_norm = torch.norm(projections, p = "fro")
+    return torch.sum(frobenius_norm ** 2) / k
+
+def overlap_top_tr(top_evecs1, top_evecs2, device="cpu"):
+    """
+        https://arxiv.org/abs/1812.04754 formula (5) the trace of projection.
+        given two tensors shapes (k, d), k - dim of top space, d - dim of model.    
+    """
+    top_evecs1 = top_evecs1.to(device) 
+    top_evecs2 = top_evecs2.to(device)
+    assert len(top_evecs1.shape) == 2 and top_evecs1.shape == top_evecs2.shape
+    k = top_evecs1.shape[0]
+
+    tr_top1 = torch.sum(top_evecs1 * top_evecs1)  # Tr(P_t)
+    tr_top2 = torch.sum(top_evecs2 * top_evecs2)  # Tr(P'_t)
+    tr_composition = torch.sum((top_evecs1 @ top_evecs2.T) ** 2)  # Tr(P_t P'_t)
+
+    return tr_composition / torch.sqrt(tr_top1 * tr_top2)
+
+def overlap_bulk_tr(top_evecs1, top_evecs2, device="cpu"):
+    """
+        https://arxiv.org/abs/1812.04754 formula (5) the trace of projection.
+        given two tensors shapes (k, d), k - dim of top space, d - dim of model.    
+    """
+    top_evecs1 = top_evecs1.to(device)
+    top_evecs2 = top_evecs2.to(device)
+    assert len(top_evecs1.shape) == 2 and top_evecs1.shape == top_evecs2.shape
+    k = top_evecs1.shape[0]
+    d = top_evecs2.shape[1]
+    d_tensor = torch.tensor(d, dtype=float)
+
+    tr_top1 = torch.sum(top_evecs1 * top_evecs1)  # Tr(P_t)
+    tr_top2 = torch.sum(top_evecs2 * top_evecs2)  # Tr(P'_t)
+    tr_composition = torch.sum((top_evecs1 @ top_evecs2.T) ** 2)  # Tr(P_t P'_t)
+
+    return (d_tensor - tr_top1 - tr_top2 + tr_composition) / torch.sqrt((d_tensor - tr_top1) * (d_tensor - tr_top2))
+
+# ======================================================
 # Deprecated: Projected Step Utils
 # ======================================================
     
