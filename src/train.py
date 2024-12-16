@@ -1,15 +1,11 @@
-from ast import Not
-from doctest import debug
+from ast import parse
 import os 
 import pathlib
 import random
-import pickle
-import json
-from datetime import datetime
 from argparse import ArgumentParser, BooleanOptionalAction
 
-from utilities import get_hessian_eigenvalues, timeit, time_block
-from proj_optimizers import BulkSGD, TopSGD
+from utilities import get_hessian_eigenvalues, timeit, time_block, save_results, save_results_cl
+from proj_optimizers import BulkSGD, TopSGD, CLBulkSGD
 from torch.nn.utils import parameters_to_vector, vector_to_parameters
 
 import torch
@@ -20,11 +16,14 @@ from torchvision import datasets, transforms
 from torch.utils.data import DataLoader, Subset, TensorDataset
 import numpy as np
 from torchsummary import summary
-import matplotlib.pyplot as plt
 
 import wandb
+from avalanche.benchmarks import PermutedMNIST
+from avalanche.training.templates import SupervisedTemplate
 
 DEVICE = 'cpu'
+
+TOP_EVECS = []
 
 def arg_parser():
     parser = ArgumentParser(description='Train')
@@ -35,8 +34,8 @@ def arg_parser():
     parser.add_argument('--save_results', action=BooleanOptionalAction, default=True)
     parser.add_argument('--seed', type=int, default=42)
 
-    parser.add_argument('--epochs', type=int, default=5, required=True)
-    parser.add_argument('--dataset', choices = ['MNIST_5k'], default='MNIST_5k')
+    parser.add_argument('--epochs', type=int, default=5, required=False)
+    parser.add_argument('--dataset', choices = ['MNIST_5k', 'MNIST_full'], default='MNIST_5k')
     parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--lr', type=float, default=0.01)
     parser.add_argument('--loss', type=str, default='cross_entropy_loss')
@@ -44,13 +43,18 @@ def arg_parser():
     # Model parameters 
     parser.add_argument('--model', choices = ['MLP'], default='MLP')
     parser.add_argument('--hidden_sizes', type=int, nargs='+', required=False)
-    parser.add_argument('--num_hidden_layers', type=int, nargs='+', required=False)
     parser.add_argument('--activation', choices = ['relu','tanh'], default='relu')
 
     # projected_training args
     parser.add_argument('--warm_up_epochs', type=int, default=0, required=False)
-    parser.add_argument('--algo', choices=['SGD', 'Bulk-SGD', 'Top-SGD'], default='SGD')
+    parser.add_argument('--algo', choices=['SGD', 'Bulk-SGD', 'Top-SGD', 'prev_Bulk-SGD'], default='SGD')
     parser.add_argument('--plot_losses', action=BooleanOptionalAction, default=False)
+
+    # CL task 
+    parser.add_argument('--n_experiences', type=int, default=2, required=False)
+
+    # Overlap args 
+    parser.add_argument('--save_evecs', action=BooleanOptionalAction, default=False)
 
     args = parser.parse_args()
     return args
@@ -93,41 +97,32 @@ def get_model(input_size : int, output_size : int, args) -> nn.Module:
     else:
         raise NotImplementedError()
     
-def projected_step_bulk(model, loss, criterion, dataset, batch_size, lr):
-    evals, evecs = get_hessian_eigenvalues(model, criterion, dataset, 
-                                           physical_batch_size=batch_size, 
-                                           neigs=10, device=DEVICE)
-    evecs.transpose_(1, 0)
-    
-    with torch.no_grad(): 
-        grad = torch.autograd.grad(loss, inputs=model.parameters(), create_graph=True)
-        vec_grad = parameters_to_vector(grad)
-        step = vec_grad.detach() 
-        for vec in evecs:
-            step -= torch.dot(vec_grad, vec) * vec
-        vec_params = parameters_to_vector(model.parameters())
-        vec_params -= step * lr
-        vector_to_parameters(vec_params, model.parameters())
-        model.zero_grad()
+def get_optimizer(args, model):
+    lr = args.lr
+    batch_size = args.batch_size
 
-def projected_step_top(model, loss, criterion, dataset, batch_size, lr):
-    evals, evecs = get_hessian_eigenvalues(model, criterion, dataset,
-                                           physical_batch_size=batch_size,
-                                           neigs=10, device=DEVICE)
-    evecs.to(DEVICE).transpose_(1, 0)
-    
-    with torch.no_grad():  # Ensure we don’t track these operations for gradient computation
-        grad = torch.autograd.grad(loss, inputs=model.parameters(), create_graph=True)
-        vec_grad = parameters_to_vector(grad).to(DEVICE)
-        step = torch.Tensor(vec_grad.shape).to(DEVICE)
-        for vec in evecs:
-            step += torch.dot(vec_grad, vec) * vec
-        vec_params = parameters_to_vector(model.parameters())
-        vec_params -= step * lr
-        vector_to_parameters(vec_params, model.parameters())
-        model.zero_grad()
+    if args.algo == "SGD":
+        optimizer = optim.SGD(model.parameters(), lr=lr)
+    elif args.algo == "Bulk-SGD":
+        optimizer = BulkSGD(model.parameters(), lr=lr, batch_size=batch_size, device=DEVICE)
+    elif args.algo == "Top-SGD":
+        optimizer = TopSGD(model.parameters(), lr=lr, batch_size=batch_size, device=DEVICE)
+    elif args.algo == "prev_Bulk-SGD":
+        optimizer = CLBulkSGD(model.parameters(), lr=lr, batch_size=batch_size, device=DEVICE)
+    else:
+        raise NotImplementedError()
+    return optimizer
 
-def train(train_loader, model, criterion, optimizer, lr, num_epochs : int, algo : str = 'SGD', cur_training_steps = 0, num_classes = 10):
+def get_partial_dataloader(dataset, subset_size, batch_size):
+    subset_indices = np.random.choice(len(dataset), subset_size, replace=False)
+    partial_dataset = Subset(dataset, subset_indices)
+    return DataLoader(dataset=partial_dataset, batch_size=batch_size,
+                                    shuffle=True, pin_memory=True)
+
+def train(train_loader, model, criterion, optimizer, lr, num_epochs: int, algo: str = 'SGD', cur_training_steps=0, num_classes=10, evals=[], evecs=[], phase = "", args = None):
+    save_evecs = True
+    if args is not None and args.save_evecs:
+        save_evecs = True
     losses = []
     per_epoch_losses = []
     training_steps_per_batch = []
@@ -138,28 +133,41 @@ def train(train_loader, model, criterion, optimizer, lr, num_epochs : int, algo 
         batches = 0.0
         training_steps_per_epoch.append(cur_training_steps)
         with time_block("Training epoch"):
-            for images, labels in train_loader:
-                images = images.to(DEVICE) 
+            for batch in train_loader:
+                images, labels, *rest = batch
+                images = images.to(DEVICE)
                 labels = labels.to(DEVICE)
 
                 if isinstance(criterion, nn.MSELoss):
-                    target_one_hot = F.one_hot(labels, num_classes=num_classes).float().to(DEVICE)
-                    labels = target_one_hot 
+                    target_one_hot = F.one_hot(
+                        labels, num_classes=num_classes).float().to(DEVICE)
+                    labels = target_one_hot
 
                 k = len(images)
 
-                # Forward pass 
+                # Forward pass
                 outputs = model(images).to(DEVICE)
                 loss = criterion(outputs, labels)
                 loss_sum += loss.item()
                 batches += 1
                 losses.append(loss.item())
                 training_steps_per_batch.append(cur_training_steps)
-                wandb.log({'loss_mb' : loss.item(), 'training_step' : cur_training_steps})
+                wandb.log({'loss_mb': loss.item(),
+                          'training_step': cur_training_steps})
 
                 cur_training_steps += k
 
+                # Bit ugly sorry. To prevent double evec calculation.
+                if args.save_evecs and algo == 'SGD':
+                    dataset = TensorDataset(images, labels)
+                    _, cur_evecs = get_hessian_eigenvalues(model, criterion, dataset,
+                                                   physical_batch_size=len(images),
+                                                   neigs=10, device=DEVICE)
+                    cur_evecs.transpose_(1, 0)
+                    TOP_EVECS.append((cur_training_steps, phase, cur_evecs.clone()))
+
                 # Backwards pass and optimization
+                # TODO: get rid of the if clause
                 if algo == 'SGD':
                     loss.backward()
                     optimizer.step()
@@ -167,22 +175,28 @@ def train(train_loader, model, criterion, optimizer, lr, num_epochs : int, algo 
                 elif algo == 'Bulk-SGD':
                     loss.backward()
                     dataset = TensorDataset(images, labels)
-                    # projected_step_bulk(model, loss, criterion, dataset, batch_size=64, lr=lr)
                     optimizer.calculate_evecs(model, criterion, dataset)
                     optimizer.step()
                     optimizer.zero_grad()
                 elif algo == 'Top-SGD':
                     loss.backward()
                     dataset = TensorDataset(images, labels)
-                    # projected_step_top(model, loss, criterion, dataset, batch_size=64, lr=lr)
                     optimizer.calculate_evecs(model, criterion, dataset)
                     optimizer.step()
                     optimizer.zero_grad()
-                    
+                elif algo == 'prev_Bulk-SGD':
+                    loss.backward()
+                    dataset = TensorDataset(images, labels)
+                    optimizer.step()
+                    optimizer.zero_grad()
                 else:
                     raise NotImplementedError()
-        print(f'Epoch [{epoch + 1}/{num_epochs}], Loss: {(loss_sum / batches):.4f}')
-        wandb.log({'loss' : (loss_sum / batches)})
+                if args.save_evecs:
+                    if hasattr(optimizer, 'evecs') and optimizer.evecs is not None:
+                        TOP_EVECS.append((cur_training_steps, phase, optimizer.evecs.clone()))
+        print(
+            f'Epoch [{epoch + 1}/{num_epochs}], Loss: {(loss_sum / batches):.4f}')
+        wandb.log({'loss': (loss_sum / batches)})
         per_epoch_losses.append(loss_sum / batches)
 
     return losses, per_epoch_losses, training_steps_per_batch, training_steps_per_epoch
@@ -233,6 +247,23 @@ def projected_training(args):
         
         print(f'Train dataset with {train_size} samples')
         print(f'Test dataset with {test_size} samples')
+    elif args.dataset == 'MNIST_full':
+        input_size = 28 * 28
+        output_size = 10
+        num_classes = 10
+        transform = transforms.Compose([transforms.ToTensor(),]) 
+                                        #transforms.Normalize((0.,), (1.,))])  # is this normalization good?
+        train_dataset = datasets.MNIST(root='./data', 
+                                            train=True, 
+                                            transform=transform, 
+                                            download=True)
+        test_dataset = datasets.MNIST(root='./data', train=False, transform=transform, download=True)
+        
+        train_size = len(train_dataset)
+        test_size = len(test_dataset) if not args.debug else 2 * batch_size
+        
+        print(f'Train dataset with {train_size} samples')
+        print(f'Test dataset with {test_size} samples')
     else:   
         raise NotImplementedError()    
 
@@ -248,7 +279,7 @@ def projected_training(args):
         criterion = nn.MSELoss()
     else:
         raise NotImplementedError()
-    optimizer = optim.SGD(model.parameters(), lr=lr)
+    optimizer = get_optimizer(args, model)
 
     summary(model, input_size=(28, 28),device=DEVICE)
 
@@ -257,86 +288,161 @@ def projected_training(args):
     warm_up_losses = train(train_loader, model, 
                            criterion, optimizer, 
                            lr, num_epochs=args.warm_up_epochs, algo='SGD', 
-                           num_classes=num_classes)
+                           num_classes=num_classes, 
+                           phase="warm-up", 
+                           args=args)
     warm_up_training_steps = 0 if len(warm_up_losses[2]) == 0 else warm_up_losses[2][-1]
     print('Finished warm-up training!')
     
     print('Post warm-up evalution...')
     warm_up_accuracy = eval(test_loader, model)   
-    if args.algo == "Bulk-SGD":
-        optimizer = BulkSGD(model.parameters(), lr=lr, batch_size=batch_size, device=DEVICE)
-    if args.algo == "Top-SGD":
-        optimizer = TopSGD(model.parameters(), lr=lr, batch_size=batch_size, device=DEVICE)
+    if hasattr(optimizer, '_warm_up'):
+        optimizer._warm_up = False
     # Training loop 
     print('Started training...')
     train_losses = train(train_loader, model, 
                          criterion, optimizer, lr, 
-                         num_epochs=args.epochs, algo=args.algo, 
-                         cur_training_steps=warm_up_training_steps)
+                         num_epochs=args.epochs,algo=args.algo, 
+                         cur_training_steps=warm_up_training_steps, 
+                         phase="training", args = args)
     print('Finished training!')
 
     print('Final evaluation')
     final_accuracy = eval(test_loader, model)
 
-    per_batch_losses = warm_up_losses[0] + train_losses[0]
-    per_epoch_losses = warm_up_losses[1] + train_losses[1]
-    training_steps_per_batch = warm_up_losses[2] + train_losses[2]
-    training_steps_per_epoch = warm_up_losses[3] + train_losses[3]
-    output_name = f"{args.dataset}_{args.model}_{args.activation}_{args.algo}"
-    if args.hidden_sizes:
-        output_name += "_hidden_sizes_" + "-".join(map(str, args.hidden_sizes))
-    if args.num_hidden_layers:
-        output_name += "_num_hidden_layers_" + "-".join(map(str, args.num_hidden_layers))
+    save_results(args, warm_up_losses, train_losses, warm_up_accuracy, final_accuracy, warm_up_training_steps, TOP_EVECS)
 
-    if args.plot_losses:
-        plt.figure(1)
-        plt.axvline(x=warm_up_training_steps, color='red', linestyle='--', label="End of warm-up")
-        plt.plot(training_steps_per_batch, np.log(per_batch_losses))
-        plt.title('Per Batch Losses (log-scale)')
-        plt.xlabel('Training steps')
-        plt.legend()
+def cl_task(args):
+    """each experience: warm-up-epochs x SGD + epochs x algo
+    -------
+    Run with the following command: 
+     python train.py --task cl_task   --epochs 4     --hidden_sizes 200 200 200 --activation 'tanh'     --warm_up_epochs 1     --algo prev_Bulk-SGD     --plot_losses     --lr 0.01     --seed 125     --loss MSE
+    -------
+    Very slow!! -> Change the train_subset_size
 
-        plt.figure(2)
-        plt.axvline(x=warm_up_training_steps, color='red', linestyle='--', label="End of warm-up")
-        plt.plot(training_steps_per_epoch, np.log(per_epoch_losses))
-        plt.title('Per Epoch Losses (log-scale)')
-        plt.xlabel('Training steps')
-        plt.legend()
+    """
 
-        plt.show()
-        output_dir = "../plots"
+    # Hyperparameters
+    batch_size = args.batch_size
+    lr = args.lr
+    train_subset_size = 5000
 
-        plot_name = output_name+ '.png'
-        os.makedirs(output_dir, exist_ok=True)
-        save_path = os.path.join(output_dir, plot_name)
-        plt.savefig(save_path)
+    # Load the dataset
+    benchmark = PermutedMNIST(n_experiences=args.n_experiences)
+    train_stream = benchmark.train_stream
+    test_stream = benchmark.test_stream
+    input_size = 28 * 28
+    output_size = 10
 
+    for experience in train_stream:
+        print("Start of task ", experience.task_label)
+        print('Classes in this task:', experience.classes_in_this_experience)
 
-    results = {}
-    results['args'] = str(vars(args))
-    results['warm_up_losses_batch'] = warm_up_losses[0]
-    results['warm_up_losses_epoch'] = warm_up_losses[1]
-    results['train_losses_batch'] = train_losses[0]
-    results['train_losses_epoch'] = train_losses[1]
-    results['warm_up_accurary'] = warm_up_accuracy
-    results['final_accuracy'] = final_accuracy
+        current_training_set = experience.dataset
+        print('Task {}'.format(experience.task_label))
+        print('This task contains', train_subset_size, 'training examples')
 
-    if args.save_results and not args.debug:
-        current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-        file_name_pickle = os.path.join(args.storage, f"projected_training_{current_time}_{output_name}.pkl")
-        with open(file_name_pickle, "wb") as file:
-            pickle.dump(results, file)
-        file_name_json = os.path.join(args.storage, f"projected_training_{current_time}_{output_name}.json")
-        with open(file_name_json, 'w') as json_file:
-            json.dump(results, json_file, indent=4)  
-        print(f'Results saved in {file_name_pickle, file_name_json}!')
+        current_test_set = test_stream[experience.current_experience].dataset
+        print('This task contains', len(current_test_set), 'test examples')
 
-        # saving to wandb
-        artifact = wandb.Artifact(name = "results", type = "dict")
-        artifact.add_file(local_path = file_name_pickle, name = "results_pickle")
-        artifact.add_file(local_path = file_name_json, name = "results_json")
-        artifact.save()
+    # Define CustomCLStrategy
+    class CustomCLStrategy(SupervisedTemplate):
+        """Mostly copied from https://avalanche-api.continualai.org/en/v0.5.0/_modules/avalanche/training/supervised/strategy_wrappers.html#Naive"""
 
+        def __init__(
+            self,
+            *,
+            model,
+            optimizer,
+            criterion,
+            lr,
+            train_mb_size,
+            train_epochs,
+            eval_mb_size,
+            device,
+            **base_kwargs
+        ):
+            super().__init__(
+                model=model,
+                optimizer=optimizer,
+                criterion=criterion,
+                train_mb_size=train_mb_size,
+                train_epochs=train_epochs,
+                eval_mb_size=eval_mb_size,
+                device=device,
+                **base_kwargs
+            )
+            self.lr = lr
+            self._criterion = criterion
+
+        def train(self, experience, exp_id=0, prev_evals=[], prev_evecs=[]):
+
+            train_dataloader = get_partial_dataloader(experience.dataset, train_subset_size, self.train_mb_size)
+            warm_up_epochs = args.warm_up_epochs
+            train_epochs = args.epochs
+
+            # TODO: change to a single list 
+            print('Started warm-up training...')
+            warm_up_losses = train(train_dataloader, self.model, self._criterion,
+                                   self.optimizer, self.lr, warm_up_epochs, 'SGD', 0)
+            warm_up_training_steps = 0 if len(
+                warm_up_losses[2]) == 0 else warm_up_losses[2][-1]
+            print('Started training...')
+            if exp_id == 0:
+                train_losses = train(train_dataloader, self.model, self._criterion, self.optimizer,
+                                     self.lr, train_epochs, 'SGD', cur_training_steps=warm_up_training_steps)
+            else:
+                if hasattr(optimizer, '_warm_up'):
+                    optimizer._warm_up = False
+                train_losses = train(train_dataloader, self.model, self._criterion, self.optimizer, self.lr, train_epochs,
+                                     args.algo, cur_training_steps=warm_up_training_steps, evals=prev_evals, evecs=prev_evecs)
+                if hasattr(optimizer, '_warm_up'):
+                    optimizer._warm_up = True
+
+            return warm_up_losses, train_losses, warm_up_training_steps
+
+    # Initialize the model, loss_function, and optimizer, strategy
+    model = get_model(input_size, output_size, args).to(DEVICE)
+    criterion = nn.CrossEntropyLoss()
+    optimizer = get_optimizer(args, model)
+    custom_cl_strategy = CustomCLStrategy(
+        model, optimizer, criterion, lr, train_mb_size=batch_size, train_epochs=5, eval_mb_size=batch_size, device=DEVICE, )
+
+    # Training loop
+    all_warm_up_losses = []
+    all_train_losses = []
+    all_warm_up_training_steps = []
+    experience_ids = []
+    cumulative_steps = 0  # Tracks total training steps across experiences
+    prev_evals = None
+    prev_evecs = None
+
+    for exp_id, experience in enumerate(train_stream):
+
+        print(f"Start of experience {exp_id + 1}: {experience}")
+
+        # Train on current experience
+        warm_up_losses, train_losses, warm_up_training_steps = custom_cl_strategy.train(
+            experience, exp_id, prev_evals, prev_evecs)
+        print("Training completed.")
+
+        all_warm_up_losses.append(warm_up_losses)
+        all_train_losses.append(train_losses)
+        all_warm_up_training_steps.append(warm_up_training_steps)
+
+        if hasattr(optimizer, 'append_evecs'):
+            train_dataloader = get_partial_dataloader(experience.dataset, train_subset_size, args.batch_size)
+            last_batch = list(train_dataloader)[-1]
+            images, labels, *rest = last_batch
+            images = images.to(DEVICE)
+            labels = labels.to(DEVICE)
+            dataset = TensorDataset(images, labels)
+
+            optimizer.append_evecs(model, criterion, dataset)
+
+    print('Computing accuracy on the test set')
+    final_accuracy = custom_cl_strategy.eval(test_stream)
+    save_results_cl(args, all_warm_up_losses, all_train_losses, final_accuracy)
 
 def main(args):
     if not args.debug:
@@ -352,6 +458,8 @@ def main(args):
 
     if args.task == 'projected_training':
         projected_training(args)
+    elif args.task == 'cl_task':
+        cl_task(args)
     else:
         raise NotImplementedError()        
 

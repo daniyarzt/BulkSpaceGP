@@ -13,7 +13,7 @@ Example script:
 cd src 
 python train.py --task projected_training \
 --epochs 4 \
---num_hidden_layers 3 --hidden_sizes 200 200 200 --activation 'tanh' \
+--hidden_sizes 200 200 200 --activation 'tanh' \
 --warm_up_epochs 1 \
 --algo SGD \
 --plot_losses \

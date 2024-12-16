@@ -1,26 +1,24 @@
+from numpy import concatenate
 import torch
 from utilities import get_hessian_eigenvalues
 from torch.nn.utils import parameters_to_vector, vector_to_parameters
 from typing import List, Union
 
 
-class BulkSGD(torch.optim.Optimizer):
+class BulkSGD(torch.optim.SGD):
     
     def __init__(self, params, batch_size, device,
                  lr: Union[float, torch.Tensor] = 1e-3):
-        defaults = dict(lr=lr)
-        super().__init__(params, defaults)
+        super().__init__(params, lr)
         self.batch_size = batch_size
         self.device = device
-
-    def _init_group(self, group, params, grads):
-        for p in group["params"]:
-            if p.grad is not None:
-                params.append(p.data.view(-1))
-                grads.append(p.grad.data.view(-1))
+        self._warm_up = True
 
     @torch.no_grad()
     def step(self):
+        if self._warm_up:
+            super().step()
+            return; 
         for group in self.param_groups:
             vec_params = parameters_to_vector([p for p in group["params"] if p.grad is not None]).to(self.device)
             vec_grad = parameters_to_vector([p.grad for p in group["params"] if p.grad is not None]).to(self.device)
@@ -37,23 +35,20 @@ class BulkSGD(torch.optim.Optimizer):
                 self.evecs.transpose_(1, 0)
 
 
-class TopSGD(torch.optim.Optimizer):
+class TopSGD(torch.optim.SGD):
     
     def __init__(self, params, batch_size, device,
                  lr: Union[float, torch.Tensor] = 1e-3):
-        defaults = dict(lr=lr)
-        super().__init__(params, defaults)
+        super().__init__(params, lr)
         self.batch_size = batch_size
         self.device = device
-
-    def _init_group(self, group, params, grads):
-        for p in group["params"]:
-            if p.grad is not None:
-                params.append(p.data.view(-1))
-                grads.append(p.grad.data.view(-1))
+        self._warm_up = True
 
     @torch.no_grad()
     def step(self):
+        if self._warm_up:
+            super().step()
+            return; 
         for group in self.param_groups:
             vec_params = parameters_to_vector([p for p in group["params"] if p.grad is not None]).to(self.device)
             vec_grad = parameters_to_vector([p.grad for p in group["params"] if p.grad is not None]).to(self.device)
@@ -68,3 +63,41 @@ class TopSGD(torch.optim.Optimizer):
                                                     physical_batch_size=self.batch_size,
                                                     neigs=10, device=self.device)
         self.evecs.transpose_(1, 0)
+
+class CLBulkSGD(torch.optim.SGD): 
+
+    def __init__(self, params, batch_size, device,
+                 lr: Union[float, torch.Tensor] = 1e-3):
+        super().__init__(params, lr)
+        self.batch_size = batch_size
+        self.device = device
+        self._warm_up = True
+        self.evecs = None
+
+    @torch.no_grad()
+    def step(self):
+        if self._warm_up or self.evecs is None:
+            super().step()
+            return; 
+        for group in self.param_groups:
+            vec_params = parameters_to_vector([p for p in group["params"] if p.grad is not None]).to(self.device)
+            vec_grad = parameters_to_vector([p.grad for p in group["params"] if p.grad is not None]).to(self.device)
+            projections = (self.evecs @ vec_grad.unsqueeze(1)).squeeze(1)
+            vec_grad -= (projections.unsqueeze(0) @ self.evecs).squeeze(0)
+            vec_params.add_(vec_grad, alpha=-group['lr'])
+            vector_to_parameters(vec_params, group["params"])
+    
+    def calculate_evecs(self, model, criterion, dataset):
+        with torch.enable_grad():
+                _, self.evecs = get_hessian_eigenvalues(model, criterion, dataset,
+                                                   physical_batch_size=self.batch_size,
+                                                   neigs=10, device=self.device)
+                self.evecs.transpose_(1, 0)
+
+    def append_evecs(self, model, criterion, dataset):
+        with torch.enable_grad():
+                _, evecs = get_hessian_eigenvalues(model, criterion, dataset,
+                                                   physical_batch_size=self.batch_size,
+                                                   neigs=10, device=self.device)
+                evecs.transpose_(1, 0)
+                self.evecs = evecs if self.evecs is None else torch.concatenate((self.evecs, evecs), dim = 0)

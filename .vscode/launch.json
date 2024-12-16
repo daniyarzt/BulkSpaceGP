@@ -1,0 +1,28 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python Debugger: Current File with Arguments",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "args": [
+                "--task", "projected_training",
+                "--epochs", "4",
+                "--hidden_sizes", "200", "200", "200",
+                "--activation", "tanh",
+                "--warm_up_epochs", "1",
+                "--algo", "Bulk-SGD",
+                "--plot_losses",
+                "--lr", "0.01",
+                "--seed", "125",
+                "--loss", "MSE",
+                "--debug"
+            ]
+        }
+    ]
+}
