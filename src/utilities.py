@@ -216,7 +216,7 @@ def time_block(label="Code block"):
 # Result Saving Utilities
 # ======================================================
 
-def save_results(args, warm_up_losses, train_losses, warm_up_accuracy, final_accuracy, warm_up_training_steps):
+def save_results(args, warm_up_losses, train_losses, warm_up_accuracy, final_accuracy, warm_up_training_steps, top_evecs):
     per_batch_losses = warm_up_losses[0] + train_losses[0]
     per_epoch_losses = warm_up_losses[1] + train_losses[1]
     training_steps_per_batch = warm_up_losses[2] + train_losses[2]
@@ -261,12 +261,16 @@ def save_results(args, warm_up_losses, train_losses, warm_up_accuracy, final_acc
 
     if args.save_results and not args.debug:
         current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-        file_name_pickle = os.path.join(args.storage, f"projected_training_{current_time}_{output_name}.pkl")
-        with open(file_name_pickle, "wb") as file:
-            pickle.dump(results, file)
         file_name_json = os.path.join(args.storage, f"projected_training_{current_time}_{output_name}.json")
         with open(file_name_json, 'w') as json_file:
             json.dump(results, json_file, indent=4)  
+        
+        # change unserializable variables 
+        results['args'] = args
+        results['top_evecs'] = top_evecs
+        file_name_pickle = os.path.join(args.storage, f"projected_training_{current_time}_{output_name}.pkl")
+        with open(file_name_pickle, "wb") as file:
+            pickle.dump(results, file)
         print(f'Results saved in {file_name_pickle, file_name_json}!')
 
         # saving to wandb

@@ -1,3 +1,4 @@
+from ast import parse
 import os 
 import pathlib
 import random
@@ -22,6 +23,8 @@ from avalanche.training.templates import SupervisedTemplate
 
 DEVICE = 'cpu'
 
+TOP_EVECS = []
+
 def arg_parser():
     parser = ArgumentParser(description='Train')
 
@@ -32,7 +35,7 @@ def arg_parser():
     parser.add_argument('--seed', type=int, default=42)
 
     parser.add_argument('--epochs', type=int, default=5, required=False)
-    parser.add_argument('--dataset', choices = ['MNIST_5k'], default='MNIST_5k')
+    parser.add_argument('--dataset', choices = ['MNIST_5k', 'MNIST_full'], default='MNIST_5k')
     parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--lr', type=float, default=0.01)
     parser.add_argument('--loss', type=str, default='cross_entropy_loss')
@@ -49,6 +52,9 @@ def arg_parser():
 
     # CL task 
     parser.add_argument('--n_experiences', type=int, default=2, required=False)
+
+    # Overlap args 
+    parser.add_argument('--save_evecs', action=BooleanOptionalAction, default=False)
 
     args = parser.parse_args()
     return args
@@ -113,7 +119,10 @@ def get_partial_dataloader(dataset, subset_size, batch_size):
     return DataLoader(dataset=partial_dataset, batch_size=batch_size,
                                     shuffle=True, pin_memory=True)
 
-def train(train_loader, model, criterion, optimizer, lr, num_epochs: int, algo: str = 'SGD', cur_training_steps=0, num_classes=10, evals=[], evecs=[]):
+def train(train_loader, model, criterion, optimizer, lr, num_epochs: int, algo: str = 'SGD', cur_training_steps=0, num_classes=10, evals=[], evecs=[], phase = "", args = None):
+    save_evecs = True
+    if args is not None and args.save_evecs:
+        save_evecs = True
     losses = []
     per_epoch_losses = []
     training_steps_per_batch = []
@@ -148,6 +157,15 @@ def train(train_loader, model, criterion, optimizer, lr, num_epochs: int, algo: 
 
                 cur_training_steps += k
 
+                # Bit ugly sorry. To prevent double evec calculation.
+                if args.save_evecs and algo == 'SGD':
+                    dataset = TensorDataset(images, labels)
+                    _, cur_evecs = get_hessian_eigenvalues(model, criterion, dataset,
+                                                   physical_batch_size=len(images),
+                                                   neigs=10, device=DEVICE)
+                    cur_evecs.transpose_(1, 0)
+                    TOP_EVECS.append((cur_training_steps, phase, cur_evecs.clone()))
+
                 # Backwards pass and optimization
                 # TODO: get rid of the if clause
                 if algo == 'SGD':
@@ -173,6 +191,9 @@ def train(train_loader, model, criterion, optimizer, lr, num_epochs: int, algo: 
                     optimizer.zero_grad()
                 else:
                     raise NotImplementedError()
+                if args.save_evecs:
+                    if hasattr(optimizer, 'evecs') and optimizer.evecs is not None:
+                        TOP_EVECS.append((cur_training_steps, phase, optimizer.evecs.clone()))
         print(
             f'Epoch [{epoch + 1}/{num_epochs}], Loss: {(loss_sum / batches):.4f}')
         wandb.log({'loss': (loss_sum / batches)})
@@ -226,6 +247,23 @@ def projected_training(args):
         
         print(f'Train dataset with {train_size} samples')
         print(f'Test dataset with {test_size} samples')
+    elif args.dataset == 'MNIST_full':
+        input_size = 28 * 28
+        output_size = 10
+        num_classes = 10
+        transform = transforms.Compose([transforms.ToTensor(),]) 
+                                        #transforms.Normalize((0.,), (1.,))])  # is this normalization good?
+        train_dataset = datasets.MNIST(root='./data', 
+                                            train=True, 
+                                            transform=transform, 
+                                            download=True)
+        test_dataset = datasets.MNIST(root='./data', train=False, transform=transform, download=True)
+        
+        train_size = len(train_dataset)
+        test_size = len(test_dataset) if not args.debug else 2 * batch_size
+        
+        print(f'Train dataset with {train_size} samples')
+        print(f'Test dataset with {test_size} samples')
     else:   
         raise NotImplementedError()    
 
@@ -250,7 +288,9 @@ def projected_training(args):
     warm_up_losses = train(train_loader, model, 
                            criterion, optimizer, 
                            lr, num_epochs=args.warm_up_epochs, algo='SGD', 
-                           num_classes=num_classes)
+                           num_classes=num_classes, 
+                           phase="warm-up", 
+                           args=args)
     warm_up_training_steps = 0 if len(warm_up_losses[2]) == 0 else warm_up_losses[2][-1]
     print('Finished warm-up training!')
     
@@ -262,14 +302,15 @@ def projected_training(args):
     print('Started training...')
     train_losses = train(train_loader, model, 
                          criterion, optimizer, lr, 
-                         num_epochs=args.epochs, algo=args.algo, 
-                         cur_training_steps=warm_up_training_steps)
+                         num_epochs=args.epochs,algo=args.algo, 
+                         cur_training_steps=warm_up_training_steps, 
+                         phase="training", args = args)
     print('Finished training!')
 
     print('Final evaluation')
     final_accuracy = eval(test_loader, model)
 
-    save_results(args, warm_up_losses, train_losses, warm_up_accuracy, final_accuracy, warm_up_training_steps)
+    save_results(args, warm_up_losses, train_losses, warm_up_accuracy, final_accuracy, warm_up_training_steps, TOP_EVECS)
 
 def cl_task(args):
     """each experience: warm-up-epochs x SGD + epochs x algo
