@@ -471,6 +471,6 @@ if __name__ == "__main__":
     print(f"device: {DEVICE}")
 
     args = arg_parser()
-    seed_everything()
+    seed_everything(args.seed)
 
     main(args) 
