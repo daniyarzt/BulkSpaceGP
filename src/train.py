@@ -1,4 +1,3 @@
-from ast import parse
 import os 
 import pathlib
 import random
@@ -7,6 +6,7 @@ from argparse import ArgumentParser, BooleanOptionalAction
 from utilities import get_hessian_eigenvalues, timeit, time_block, save_results, save_results_cl
 from proj_optimizers import BulkSGD, TopSGD, CLBulkSGD
 from torch.nn.utils import parameters_to_vector, vector_to_parameters
+from tqdm import tqdm
 
 import torch
 import torch.nn as nn
@@ -133,7 +133,7 @@ def train(train_loader, model, criterion, optimizer, lr, num_epochs: int, algo: 
         batches = 0.0
         training_steps_per_epoch.append(cur_training_steps)
         with time_block("Training epoch"):
-            for batch in train_loader:
+            for batch in tqdm(train_loader, "training loop..."):
                 images, labels, *rest = batch
                 images = images.to(DEVICE)
                 labels = labels.to(DEVICE)
