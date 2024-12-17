@@ -1,4 +1,3 @@
-from ast import parse
 import os 
 import pathlib
 import random
@@ -7,6 +6,7 @@ from argparse import ArgumentParser, BooleanOptionalAction
 from utilities import get_hessian_eigenvalues, timeit, time_block, save_results, save_results_cl
 from proj_optimizers import BulkSGD, TopSGD, CLBulkSGD
 from torch.nn.utils import parameters_to_vector, vector_to_parameters
+from tqdm import tqdm
 
 import torch
 import torch.nn as nn
@@ -24,6 +24,8 @@ from avalanche.training.templates import SupervisedTemplate
 DEVICE = 'cpu'
 
 TOP_EVECS = []
+TOP_EVEC_RECORD_FREQ = 1
+TOP_EVEC_TIMER = 0
 
 def arg_parser():
     parser = ArgumentParser(description='Train')
@@ -120,6 +122,8 @@ def get_partial_dataloader(dataset, subset_size, batch_size):
                                     shuffle=True, pin_memory=True)
 
 def train(train_loader, model, criterion, optimizer, lr, num_epochs: int, algo: str = 'SGD', cur_training_steps=0, num_classes=10, evals=[], evecs=[], phase = "", args = None):
+    global TOP_EVEC_TIMER, TOP_EVEC_RECORD_FREQ, TOP_EVECS
+    
     save_evecs = True
     if args is not None and args.save_evecs:
         save_evecs = True
@@ -133,7 +137,7 @@ def train(train_loader, model, criterion, optimizer, lr, num_epochs: int, algo: 
         batches = 0.0
         training_steps_per_epoch.append(cur_training_steps)
         with time_block("Training epoch"):
-            for batch in train_loader:
+            for batch in tqdm(train_loader, "training loop..."):
                 images, labels, *rest = batch
                 images = images.to(DEVICE)
                 labels = labels.to(DEVICE)
@@ -158,7 +162,8 @@ def train(train_loader, model, criterion, optimizer, lr, num_epochs: int, algo: 
                 cur_training_steps += k
 
                 # Bit ugly sorry. To prevent double evec calculation.
-                if args.save_evecs and algo == 'SGD':
+                if args.save_evecs and algo == 'SGD' and TOP_EVEC_TIMER % TOP_EVEC_RECORD_FREQ == 0:
+                    TOP_EVEC_TIMER += 1
                     dataset = TensorDataset(images, labels)
                     _, cur_evecs = get_hessian_eigenvalues(model, criterion, dataset,
                                                    physical_batch_size=len(images),
@@ -191,8 +196,9 @@ def train(train_loader, model, criterion, optimizer, lr, num_epochs: int, algo: 
                     optimizer.zero_grad()
                 else:
                     raise NotImplementedError()
-                if args.save_evecs:
+                if args.save_evecs and TOP_EVEC_TIMER % TOP_EVEC_RECORD_FREQ == 0:
                     if hasattr(optimizer, 'evecs') and optimizer.evecs is not None:
+                        TOP_EVEC_TIMER += 1
                         TOP_EVECS.append((cur_training_steps, phase, optimizer.evecs.clone()))
         print(
             f'Epoch [{epoch + 1}/{num_epochs}], Loss: {(loss_sum / batches):.4f}')
@@ -316,7 +322,7 @@ def cl_task(args):
     """each experience: warm-up-epochs x SGD + epochs x algo
     -------
     Run with the following command: 
-     python train.py --task cl_task   --epochs 4     --hidden_sizes 200 200 200 --activation 'tanh'     --warm_up_epochs 1     --algo prev_Bulk-SGD     --plot_losses     --lr 0.01     --seed 125     --loss MSE
+     `python train.py --task cl_task   --epochs 4     --hidden_sizes 200 200 200 --activation 'tanh'     --warm_up_epochs 1     --algo prev_Bulk-SGD     --plot_losses     --lr 0.01     --seed 125     --loss MSE`
     -------
     Very slow!! -> Change the train_subset_size
 
@@ -390,12 +396,12 @@ def cl_task(args):
             print('Started training...')
             if exp_id == 0:
                 train_losses = train(train_dataloader, self.model, self._criterion, self.optimizer,
-                                     self.lr, train_epochs, 'SGD', cur_training_steps=warm_up_training_steps)
+                                     self.lr, train_epochs, 'SGD', cur_training_steps=warm_up_training_steps, phase = f'{exp_id}', args = args)
             else:
                 if hasattr(optimizer, '_warm_up'):
                     optimizer._warm_up = False
                 train_losses = train(train_dataloader, self.model, self._criterion, self.optimizer, self.lr, train_epochs,
-                                     args.algo, cur_training_steps=warm_up_training_steps, evals=prev_evals, evecs=prev_evecs)
+                                     args.algo, cur_training_steps=warm_up_training_steps, evals=prev_evals, evecs=prev_evecs, phase = f'{exp_id}', args = args)
                 if hasattr(optimizer, '_warm_up'):
                     optimizer._warm_up = True
 
@@ -442,7 +448,7 @@ def cl_task(args):
 
     print('Computing accuracy on the test set')
     final_accuracy = custom_cl_strategy.eval(test_stream)
-    save_results_cl(args, all_warm_up_losses, all_train_losses, final_accuracy)
+    save_results_cl(args, all_warm_up_losses, all_train_losses, final_accuracy, top_evecs=TOP_EVECS)
 
 def main(args):
     if not args.debug:
@@ -471,6 +477,6 @@ if __name__ == "__main__":
     print(f"device: {DEVICE}")
 
     args = arg_parser()
-    seed_everything()
+    seed_everything(args.seed)
 
     main(args) 

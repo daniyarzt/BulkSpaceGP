@@ -279,7 +279,7 @@ def save_results(args, warm_up_losses, train_losses, warm_up_accuracy, final_acc
         artifact.add_file(local_path = file_name_json, name = "results_json")
         artifact.save()
 
-def save_results_cl(args, all_warm_up_losses, all_train_losses, final_accuracy=0):
+def save_results_cl(args, all_warm_up_losses, all_train_losses, final_accuracy=0, top_evecs = None):
     num_experiences = len(all_warm_up_losses)
     fig, axes = plt.subplots(2, num_experiences, figsize=(
         5 * num_experiences, 4), constrained_layout=True)
@@ -333,19 +333,24 @@ def save_results_cl(args, all_warm_up_losses, all_train_losses, final_accuracy=0
     plt.savefig(save_path)
 
     results = {}
-    results['args'] = args
+    results['args'] = str(vars(args))
     results['all_train_losses'] = all_train_losses
     results['all_warm_up_losses'] = all_warm_up_losses
     results['final_accuracy'] = final_accuracy
 
     if args.save_results and not args.debug:
         current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-        file_name_pickle = os.path.join(args.storage, f"cl_tast_{current_time}_{output_name}.pkl")
-        with open(file_name_pickle, "wb") as file:
-            pickle.dump(results, file)
         file_name_json = os.path.join(args.storage, f"cl_task_{current_time}_{output_name}.json")
         with open(file_name_json, 'w') as json_file:
             json.dump(results, json_file, indent=4)  
+        
+        # change unserializable variables 
+        results['args'] = args
+        results['top_evecs'] = top_evecs
+
+        file_name_pickle = os.path.join(args.storage, f"cl_tast_{current_time}_{output_name}.pkl")
+        with open(file_name_pickle, "wb") as file:
+            pickle.dump(results, file)
         print(f'Results saved in {file_name_pickle, file_name_json}!')
 
         # saving to wandb
