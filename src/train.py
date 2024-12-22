@@ -68,7 +68,7 @@ def arg_parser():
     args = parser.parse_args()
     return args
 
-def train_avalanche(strategy, benchmark):
+def train_avalanche(args, strategy, benchmark):
     # Train and evaluate
     for experience in benchmark.train_stream:
         print(f"Start training on experience {experience.current_experience}")
@@ -77,13 +77,15 @@ def train_avalanche(strategy, benchmark):
     training_steps_per_batch, per_batch_losses = training_statistics["Loss_MB/train_phase/train_stream/Task000"]
     training_steps_per_epoch, per_epoch_losses = training_statistics["Loss_Epoch/train_phase/train_stream/Task000"]
 
-    all_train_losses = [(per_batch_losses, per_epoch_losses, training_steps_per_batch, training_steps_per_epoch)]
+    epoch_size = len(training_steps_per_batch) // (args.n_experiences * args.epochs)
+
+    all_train_losses = [(per_batch_losses, per_epoch_losses, [x*args.batch_size for x in training_steps_per_batch], [x*args.batch_size*epoch_size for x in training_steps_per_epoch])]
     final_accuracy = strategy.eval(benchmark.test_stream)
 
     return final_accuracy, all_train_losses
 
 
-def run_avalanche(strategy_name, hyperparamters, model, optimizer, criterion, benchmark):
+def run_avalanche(args, strategy_name, hyperparamters, model, optimizer, criterion, benchmark):
     strategies = {
         "ewc": EWC,
         "agem": AGEM,
@@ -103,7 +105,7 @@ def run_avalanche(strategy_name, hyperparamters, model, optimizer, criterion, be
         evaluator=eval_plugin
     )
     
-    return train_avalanche(strategy, benchmark)
+    return train_avalanche(args, strategy, benchmark)
 
 def seed_everything(seed=42):
     random.seed(seed)
@@ -471,7 +473,7 @@ def cl_task(args):
             }
         }
 
-        final_accuracy, all_train_losses = run_avalanche(args.algo, hyperparams[args.algo], model, optimizer, criterion, benchmark)
+        final_accuracy, all_train_losses = run_avalanche(args, args.algo, hyperparams[args.algo], model, optimizer, criterion, benchmark)
         all_warm_up_losses = [([], [], [], [])]*len(all_train_losses)
         save_results_cl(args, all_warm_up_losses, all_train_losses, final_accuracy, top_evecs=TOP_EVECS)
         return
