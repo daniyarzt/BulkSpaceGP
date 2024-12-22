@@ -21,11 +21,18 @@ import wandb
 from avalanche.benchmarks import PermutedMNIST
 from avalanche.training.templates import SupervisedTemplate
 
+from avalanche.evaluation.metrics import MinibatchLoss, EpochLoss, TaskAwareLoss
+from avalanche.logging import InteractiveLogger
+from avalanche.training.plugins import EvaluationPlugin
+
+from avalanche.training.supervised import EWC, AGEM
+
 DEVICE = 'cpu'
 
 TOP_EVECS = []
 TOP_EVEC_RECORD_FREQ = 1
 TOP_EVEC_TIMER = 0
+baselines = ["ewc", "agem", "ogd", "gpm"]
 
 def arg_parser():
     parser = ArgumentParser(description='Train')
@@ -49,7 +56,7 @@ def arg_parser():
 
     # projected_training args
     parser.add_argument('--warm_up_epochs', type=int, default=0, required=False)
-    parser.add_argument('--algo', choices=['SGD', 'Bulk-SGD', 'Top-SGD', 'prev_Bulk-SGD'], default='SGD')
+    parser.add_argument('--algo', choices=['SGD', 'Bulk-SGD', 'Top-SGD', 'prev_Bulk-SGD'] + baselines, default='SGD')
     parser.add_argument('--plot_losses', action=BooleanOptionalAction, default=False)
 
     # CL task 
@@ -60,6 +67,43 @@ def arg_parser():
 
     args = parser.parse_args()
     return args
+
+def train_avalanche(strategy, benchmark):
+    # Train and evaluate
+    for experience in benchmark.train_stream:
+        print(f"Start training on experience {experience.current_experience}")
+        strategy.train(experience)
+    training_statistics = strategy.evaluator.get_all_metrics()
+    training_steps_per_batch, per_batch_losses = training_statistics["Loss_MB/train_phase/train_stream/Task000"]
+    training_steps_per_epoch, per_epoch_losses = training_statistics["Loss_Epoch/train_phase/train_stream/Task000"]
+
+    all_train_losses = [(per_batch_losses, per_epoch_losses, training_steps_per_batch, training_steps_per_epoch)]
+    final_accuracy = strategy.eval(benchmark.test_stream)
+
+    return final_accuracy, all_train_losses
+
+
+def run_avalanche(strategy_name, hyperparamters, model, optimizer, criterion, benchmark):
+    strategies = {
+        "ewc": EWC,
+        "agem": AGEM,
+    }
+    
+    eval_plugin = EvaluationPlugin(
+        MinibatchLoss(),
+        EpochLoss(),
+        loggers=[InteractiveLogger()]
+    )
+
+    strategy = strategies[strategy_name](
+        model=model,
+        optimizer=optimizer,
+        criterion=criterion,
+        **hyperparamters,
+        evaluator=eval_plugin
+    )
+    
+    return train_avalanche(strategy, benchmark)
 
 def seed_everything(seed=42):
     random.seed(seed)
@@ -103,7 +147,7 @@ def get_optimizer(args, model):
     lr = args.lr
     batch_size = args.batch_size
 
-    if args.algo == "SGD":
+    if args.algo in ["SGD", "ewc", "agem"]:
         optimizer = optim.SGD(model.parameters(), lr=lr)
     elif args.algo == "Bulk-SGD":
         optimizer = BulkSGD(model.parameters(), lr=lr, batch_size=batch_size, device=DEVICE)
@@ -390,7 +434,7 @@ def cl_task(args):
             # TODO: change to a single list 
             print('Started warm-up training...')
             warm_up_losses = train(train_dataloader, self.model, self._criterion,
-                                   self.optimizer, self.lr, warm_up_epochs, 'SGD', 0)
+                                   self.optimizer, self.lr, warm_up_epochs, 'SGD', 0, args=args)
             warm_up_training_steps = 0 if len(
                 warm_up_losses[2]) == 0 else warm_up_losses[2][-1]
             print('Started training...')
@@ -411,6 +455,27 @@ def cl_task(args):
     model = get_model(input_size, output_size, args).to(DEVICE)
     criterion = nn.CrossEntropyLoss()
     optimizer = get_optimizer(args, model)
+    if args.algo in baselines:
+        hyperparams = {
+            "ewc" : {
+                "ewc_lambda": 10.0,
+                "train_mb_size": batch_size,
+                "train_epochs": args.epochs,
+                "eval_mb_size": batch_size,
+            },
+            "agem" : {
+                "patterns_per_exp": 500,
+                "train_mb_size": batch_size,
+                "train_epochs": args.epochs,
+                "eval_mb_size": batch_size,
+            }
+        }
+
+        final_accuracy, all_train_losses = run_avalanche(args.algo, hyperparams[args.algo], model, optimizer, criterion, benchmark)
+        all_warm_up_losses = [([], [], [], [])]*len(all_train_losses)
+        save_results_cl(args, all_warm_up_losses, all_train_losses, final_accuracy, top_evecs=TOP_EVECS)
+        return
+    
     custom_cl_strategy = CustomCLStrategy(
         model, optimizer, criterion, lr, train_mb_size=batch_size, train_epochs=5, eval_mb_size=batch_size, device=DEVICE, )
 
