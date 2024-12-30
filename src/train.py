@@ -410,7 +410,19 @@ def cl_task(args):
     """each experience: warm-up-epochs x SGD + epochs x algo
     -------
     Run with the following command: 
-     `python train.py --task cl_task   --epochs 4     --hidden_sizes 200 200 200 --activation 'tanh'     --warm_up_epochs 1     --algo prev_Bulk-SGD     --plot_losses     --lr 0.01     --seed 125     --loss MSE`
+     ```python train.py --task cl_task \
+        --epochs 1  \
+        --hidden_sizes 100 100 100 \
+        --activation 'relu' \
+        --warm_up_epochs 0   \
+        --algo prev_Bulk-SGD   \
+        --plot_losses  \
+        --lr 0.01 \
+        --seed 125 \
+        --loss MSE \
+        --n_experiences 3 \
+        --n_bulk_batches 1 \
+    ```
     -------
     Very slow!! -> Change the train_subset_size
 
