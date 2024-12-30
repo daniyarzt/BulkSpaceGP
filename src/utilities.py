@@ -18,7 +18,7 @@ import json
 from datetime import datetime
 import matplotlib.pyplot as plt
 import wandb
-from zmq import device
+from pyhessian import hessian
 
 # the default value for "physical batch size", which is the largest batch size that we try to put on the GPU
 DEFAULT_PHYS_BS = 1000
@@ -65,7 +65,6 @@ def lanczos(matrix_vector, dim: int, neigs: int, device = 'cpu'):
     return torch.from_numpy(np.ascontiguousarray(evals[::-1]).copy()).float(), \
            torch.from_numpy(np.ascontiguousarray(np.flip(evecs, -1)).copy()).float()
 
-
 def get_hessian_eigenvalues(network: nn.Module, loss_fn: nn.Module, dataset: Dataset,
                             neigs=6, physical_batch_size=1000, device = 'cpu'):
     """ Compute the leading Hessian eigenvalues. """
@@ -76,6 +75,28 @@ def get_hessian_eigenvalues(network: nn.Module, loss_fn: nn.Module, dataset: Dat
     nparams = len(parameters_to_vector((network.parameters())))
     evals, evecs = lanczos(hvp_delta, nparams, neigs=neigs, device = device)
     return evals, evecs.to(device)
+
+def approx_hessian_trace(model, loss_fn, dataset, physical_batch_size, device):
+    trace = []
+    cuda = False if device == 'cpu' else True
+    for (X, y) in iterate_dataset(dataset, physical_batch_size, device=device):
+        hessian_comp = hessian(model, loss_fn, data=(X, y), cuda=cuda)
+        trace += hessian_comp.trace()
+    return np.mean(trace)
+
+def get_projected_sharpness(network : nn.Module, loss_fn : nn.Module, dataset : Dataset, 
+                            physical_batch_size = 1000, top_evecs = [], device = 'cpu'):
+    """ Computes the sharpness of the loss lanscape post bulk-space projection. """
+    hvp_delta = lambda delta: compute_hvp(network, 
+                                          loss_fn, dataset, delta, 
+                                          physical_batch_size=physical_batch_size, 
+                                          device = device).detach().cpu()
+
+    trace = approx_hessian_trace(network, loss_fn, dataset, physical_batch_size, device)
+    for top_space in top_evecs:
+        for vec in top_space:
+            trace -= torch.dot(vec, hvp_delta(vec)) / len(top_evecs)
+    return trace
 
 # ======================================================
 # Space Overlap Utilities
@@ -103,7 +124,7 @@ def overlap_top_tr(top_evecs1, top_evecs2, device="cpu"):
     """
     top_evecs1 = top_evecs1.to(device) 
     top_evecs2 = top_evecs2.to(device)
-    assert len(top_evecs1.shape) == 2 and top_evecs1.shape == top_evecs2.shape
+    assert len(top_evecs1.shape) == 2 and top_evecs1.shape[-1] == top_evecs2.shape[-1]
     k = top_evecs1.shape[0]
 
     tr_top1 = torch.sum(top_evecs1 * top_evecs1)  # Tr(P_t)
@@ -171,7 +192,6 @@ def projected_step_top(model, loss, criterion, dataset, batch_size, lr, device):
         vec_params -= step * lr
         vector_to_parameters(vec_params, model.parameters())
         model.zero_grad()
-
 
 def projected_step_bulk_of_prev_exp(model, evals, evecs, loss, criterion, dataset, batch_size, lr, device):
     with torch.no_grad():
