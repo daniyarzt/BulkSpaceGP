@@ -187,9 +187,10 @@ def train(train_loader, model, criterion, optimizer, lr, num_epochs: int, algo: 
           cur_training_steps=0, num_classes=10, evals=[], evecs=[], phase = "", args = None, **kwargs):
     global TOP_EVEC_TIMER, TOP_EVEC_RECORD_FREQ, TOP_EVECS, SHARPNESS_FREQ, SHARPNESS_TIMER
     
-    save_evecs = True
+    save_evecs = False
     if args is not None and args.save_evecs:
         save_evecs = True
+
     losses = []
     per_epoch_losses = []
     training_steps_per_batch = []
@@ -273,9 +274,9 @@ def train(train_loader, model, criterion, optimizer, lr, num_epochs: int, algo: 
                 else:
                     raise NotImplementedError()
                 
-                if args.save_evecs and TOP_EVEC_TIMER % TOP_EVEC_RECORD_FREQ == 0:
-                    if hasattr(optimizer, 'evecs') and optimizer.evecs is not None:
-                        TOP_EVEC_TIMER += 1
+                if args.save_evecs and hasattr(optimizer, 'evecs') and optimizer.evecs is not None :
+                    TOP_EVEC_TIMER += 1
+                    if TOP_EVEC_TIMER % TOP_EVEC_RECORD_FREQ == 0:
                         TOP_EVECS.append((cur_training_steps, phase, optimizer.evecs.clone()))
 
                 if 'holdouts' in kwargs:
