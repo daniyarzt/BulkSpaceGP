@@ -19,6 +19,7 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 import wandb
 from pyhessian import hessian
+from avalanche.core import BaseSGDPlugin
 
 # the default value for "physical batch size", which is the largest batch size that we try to put on the GPU
 DEFAULT_PHYS_BS = 1000
@@ -379,3 +380,58 @@ def save_results_cl(args, all_warm_up_losses, all_train_losses, final_accuracy=0
         artifact.add_file(local_path = file_name_json, name = "results_json")
         artifact.save()
 
+# ======================================================
+# Avalanche Plugins
+# ======================================================
+
+class WandBAccuracyLogger(BaseSGDPlugin):
+    def __init__(self, holdout_datasets, batch_size):
+        """
+        A plugin to log accuracy on a holdout dataset to Weights & Biases (W&B).
+
+        :param holdout_dataset: Avalanche dataset to evaluate accuracy.
+        :param project_name: Name of the W&B project.
+        """
+        super().__init__()
+        self.holdout_datasets = holdout_datasets
+        self.batch_size = batch_size
+        self.training_step = 0 
+        self.cur_exp = 0
+
+    def after_training_iteration(self, strategy, *args, **kwargs):
+        """
+        Logs accuracy on the holdout dataset at the end of each training epoch.
+        """
+        self.training_step += len(strategy.mbatch[0])
+        for (exp_id, holdout) in zip(range(self.cur_exp + 1), self.holdout_datasets):
+            holdout_accuracy = self._evaluate_holdout(strategy, holdout)
+            wandb.log({"training_step": self.training_step, f"exp_{exp_id}_accuracy": holdout_accuracy})
+
+    def after_training_exp(self, strategy):
+        self.cur_exp += 1
+        self.training_step = 0
+
+    # def after_eval(self, strategy, **kwargs):
+    #     """
+    #     Logs accuracy on the holdout dataset after evaluation.
+    #     """
+    #     holdout_accuracy = self._evaluate_holdout(strategy)
+    #     wandb.log({"holdout_accuracy_after_eval": holdout_accuracy})
+
+    def _evaluate_holdout(self, strategy, holdout):
+        """
+        Evaluates the accuracy of the model on the holdout dataset.
+        """
+        # strategy.eval()
+        correct = 0
+        total = 0
+
+        holdout_dataloader = DataLoader(holdout, self.batch_size, shuffle=False)
+        for x, y, _ in holdout_dataloader:
+            x, y = x.to(strategy.device), y.to(strategy.device)
+            outputs = strategy.model(x)
+            predictions = outputs.argmax(dim=1)
+            correct += (predictions == y).sum().item()
+            total += y.size(0)
+
+        return correct / total * 100. if total > 0 else 0

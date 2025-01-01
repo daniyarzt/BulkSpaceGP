@@ -3,7 +3,7 @@ import pathlib
 import random
 from argparse import ArgumentParser, BooleanOptionalAction
 
-from utilities import get_hessian_eigenvalues, timeit, time_block, save_results, save_results_cl, get_projected_sharpness
+from utilities import get_hessian_eigenvalues, timeit, time_block, save_results, save_results_cl, get_projected_sharpness, WandBAccuracyLogger
 from proj_optimizers import BulkSGD, TopSGD, CLBulkSGD
 from torch.nn.utils import parameters_to_vector, vector_to_parameters
 from tqdm import tqdm
@@ -90,7 +90,7 @@ def train_avalanche(args, strategy, benchmark):
     return final_accuracy, all_train_losses
 
 
-def run_avalanche(args, strategy_name, hyperparamters, model, optimizer, criterion, benchmark):
+def run_avalanche(args, strategy_name, hyperparamters, model, optimizer, criterion, benchmark, holdout_datasets):
     strategies = {
         "ewc": EWC,
         "agem": AGEM,
@@ -101,13 +101,15 @@ def run_avalanche(args, strategy_name, hyperparamters, model, optimizer, criteri
         EpochLoss(),
         loggers=[InteractiveLogger()]
     )
+    wandb_acc_logger = WandBAccuracyLogger(holdout_datasets, args.batch_size)
 
     strategy = strategies[strategy_name](
         model=model,
         optimizer=optimizer,
         criterion=criterion,
         **hyperparamters,
-        evaluator=eval_plugin
+        evaluator=eval_plugin, 
+        plugins = [wandb_acc_logger]
     )
     
     return train_avalanche(args, strategy, benchmark)
@@ -533,7 +535,7 @@ def cl_task(args):
             }
         }
 
-        final_accuracy, all_train_losses = run_avalanche(args, args.algo, hyperparams[args.algo], model, optimizer, criterion, benchmark)
+        final_accuracy, all_train_losses = run_avalanche(args, args.algo, hyperparams[args.algo], model, optimizer, criterion, benchmark, holdout_datasets)
         all_warm_up_losses = [([], [], [], [])]*len(all_train_losses)
         save_results_cl(args, all_warm_up_losses, all_train_losses, final_accuracy, top_evecs=TOP_EVECS)
         return
