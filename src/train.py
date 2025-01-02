@@ -69,6 +69,7 @@ def arg_parser():
     parser.add_argument('--save_evecs', action=BooleanOptionalAction, default=False)
     parser.add_argument('--plot_sharpness', action=BooleanOptionalAction, default=False)
     parser.add_argument('--log_overlaps', action=BooleanOptionalAction, default=False)
+    parser.add_argument('--holdout_acc_freq', type=int, default=1)
 
     args = parser.parse_args()
     return args
@@ -101,7 +102,7 @@ def run_avalanche(args, strategy_name, hyperparamters, model, optimizer, criteri
         EpochLoss(),
         loggers=[InteractiveLogger()]
     )
-    wandb_acc_logger = WandBAccuracyLogger(holdout_datasets, args.batch_size)
+    wandb_acc_logger = WandBAccuracyLogger(holdout_datasets, args.batch_size, args.holdout_acc_freq)
 
     strategy = strategies[strategy_name](
         model=model,
@@ -188,6 +189,10 @@ def get_holdout_dataset(test_dataset, subset_size):
 def train(train_loader, model, criterion, optimizer, lr, num_epochs: int, algo: str = 'SGD', 
           cur_training_steps=0, num_classes=10, evals=[], evecs=[], phase = "", args = None, **kwargs):
     global TOP_EVEC_TIMER, TOP_EVEC_RECORD_FREQ, TOP_EVECS, SHARPNESS_FREQ, SHARPNESS_TIMER
+    holdout_acc_timer = 0
+    holdout_acc_freq = 1
+    if args is not None:
+        holdout_acc_freq = args.holdout_acc_freq
     
     save_evecs = False
     if args is not None and args.save_evecs:
@@ -282,13 +287,14 @@ def train(train_loader, model, criterion, optimizer, lr, num_epochs: int, algo: 
                     TOP_EVEC_TIMER += 1
 
                 if 'holdouts' in kwargs:
-                    for i, holdout_dataset in enumerate(kwargs['holdouts']):
-                            holdout_loader = DataLoader(dataset=holdout_dataset, 
-                                                        batch_size=args.batch_size,
-                                                        shuffle=True, pin_memory=True)
-                            holdout_accuracy = eval(holdout_loader, model, verbose = False)
-                            wandb.log({f"exp_{i}_accuracy" : holdout_accuracy})
-                
+                    if holdout_acc_timer % holdout_acc_freq == 0:
+                        for i, holdout_dataset in enumerate(kwargs['holdouts']):
+                                holdout_loader = DataLoader(dataset=holdout_dataset, 
+                                                            batch_size=args.batch_size,
+                                                            shuffle=True, pin_memory=True)
+                                holdout_accuracy = eval(holdout_loader, model, verbose = False)
+                                wandb.log({f"exp_{i}_accuracy" : holdout_accuracy})
+                    holdout_acc_timer += 1
         print(
             f'Epoch [{epoch + 1}/{num_epochs}], Loss: {(loss_sum / batches):.4f}')
         wandb.log({'loss': (loss_sum / batches)})
@@ -435,7 +441,7 @@ def cl_task(args):
     batch_size = args.batch_size
     lr = args.lr
     train_subset_size = None
-    holdout_size = 200
+    holdout_size = 500
 
     # Load the dataset
     benchmark = PermutedMNIST(n_experiences=args.n_experiences)

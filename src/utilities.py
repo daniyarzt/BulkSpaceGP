@@ -385,7 +385,7 @@ def save_results_cl(args, all_warm_up_losses, all_train_losses, final_accuracy=0
 # ======================================================
 
 class WandBAccuracyLogger(BaseSGDPlugin):
-    def __init__(self, holdout_datasets, batch_size):
+    def __init__(self, holdout_datasets, batch_size, holdout_acc_freq):
         """
         A plugin to log accuracy on a holdout dataset to Weights & Biases (W&B).
 
@@ -395,6 +395,8 @@ class WandBAccuracyLogger(BaseSGDPlugin):
         super().__init__()
         self.holdout_datasets = holdout_datasets
         self.batch_size = batch_size
+        self.freq = holdout_acc_freq
+        self.timer = 0
         self.training_step = 0 
         self.cur_exp = 0
 
@@ -403,9 +405,13 @@ class WandBAccuracyLogger(BaseSGDPlugin):
         Logs accuracy on the holdout dataset at the end of each training epoch.
         """
         self.training_step += len(strategy.mbatch[0])
-        for (exp_id, holdout) in zip(range(self.cur_exp + 1), self.holdout_datasets):
-            holdout_accuracy = self._evaluate_holdout(strategy, holdout)
-            wandb.log({"training_step": self.training_step, f"exp_{exp_id}_accuracy": holdout_accuracy})
+
+        if self.timer % self.freq == 0:
+            for (exp_id, holdout) in zip(range(self.cur_exp + 1), self.holdout_datasets):
+                holdout_accuracy = self._evaluate_holdout(strategy, holdout)
+                wandb.log({"training_step": self.training_step, f"exp_{exp_id}_accuracy": holdout_accuracy})
+        
+        self.timer += 1
 
     def after_training_exp(self, strategy):
         self.cur_exp += 1
