@@ -229,7 +229,6 @@ def train(train_loader, model, criterion, optimizer, lr, num_epochs: int, algo: 
 
                 # Bit ugly sorry. To prevent double evec calculation.
                 if args.save_evecs and algo == 'SGD':
-                    TOP_EVEC_TIMER += 1
                     if TOP_EVEC_TIMER % TOP_EVEC_RECORD_FREQ == 0:
                         dataset = TensorDataset(images, labels)
                         _, cur_evecs = get_hessian_eigenvalues(model, criterion, dataset,
@@ -237,10 +236,10 @@ def train(train_loader, model, criterion, optimizer, lr, num_epochs: int, algo: 
                                                     neigs=10, device=DEVICE)
                         cur_evecs.transpose_(1, 0)
                         TOP_EVECS.append((cur_training_steps, phase, cur_evecs.clone()))
+                    TOP_EVEC_TIMER += 1
 
                 # Plotting sharpness 
                 if args.plot_sharpness:
-                    SHARPNESS_TIMER += 1
                     if SHARPNESS_TIMER % SHARPNESS_FREQ == 0:
                         dataset = TensorDataset(images, labels)
                         top_evecs = [] if not hasattr(optimizer, 'top_evecs') else optimizer.top_evecs
@@ -249,6 +248,7 @@ def train(train_loader, model, criterion, optimizer, lr, num_epochs: int, algo: 
                                                             top_evecs = top_evecs, device = DEVICE)
                         wandb.log({'sharpness' : sharpness})
                         print(f'shaprness : {sharpness}')
+                    SHARPNESS_TIMER += 1
 
                 # Backwards pass and optimization
                 # TODO: get rid of the if clause
@@ -277,9 +277,9 @@ def train(train_loader, model, criterion, optimizer, lr, num_epochs: int, algo: 
                     raise NotImplementedError()
                 
                 if args.save_evecs and hasattr(optimizer, 'evecs') and optimizer.evecs is not None :
-                    TOP_EVEC_TIMER += 1
                     if TOP_EVEC_TIMER % TOP_EVEC_RECORD_FREQ == 0:
                         TOP_EVECS.append((cur_training_steps, phase, optimizer.evecs.clone()))
+                    TOP_EVEC_TIMER += 1
 
                 if 'holdouts' in kwargs:
                     for i, holdout_dataset in enumerate(kwargs['holdouts']):
