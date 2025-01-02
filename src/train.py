@@ -21,7 +21,7 @@ import wandb
 from avalanche.benchmarks import PermutedMNIST
 from avalanche.training.templates import SupervisedTemplate
 
-from avalanche.evaluation.metrics import MinibatchLoss, EpochLoss, TaskAwareLoss
+from avalanche.evaluation.metrics import MinibatchLoss, EpochLoss, TaskAwareLoss, StreamAccuracy
 from avalanche.logging import InteractiveLogger
 from avalanche.training.plugins import EvaluationPlugin
 
@@ -87,7 +87,6 @@ def train_avalanche(args, strategy, benchmark):
 
     all_train_losses = [(per_batch_losses, per_epoch_losses, [x*args.batch_size for x in training_steps_per_batch], [x*args.batch_size*epoch_size for x in training_steps_per_epoch])]
     final_accuracy = strategy.eval(benchmark.test_stream)
-
     return final_accuracy, all_train_losses
 
 
@@ -100,6 +99,7 @@ def run_avalanche(args, strategy_name, hyperparamters, model, optimizer, criteri
     eval_plugin = EvaluationPlugin(
         MinibatchLoss(),
         EpochLoss(),
+        StreamAccuracy(),
         loggers=[InteractiveLogger()]
     )
     wandb_acc_logger = WandBAccuracyLogger(holdout_datasets, args.batch_size, args.holdout_acc_freq)
@@ -113,7 +113,14 @@ def run_avalanche(args, strategy_name, hyperparamters, model, optimizer, criteri
         plugins = [wandb_acc_logger]
     )
     
-    return train_avalanche(args, strategy, benchmark)
+    result =  train_avalanche(args, strategy, benchmark)
+
+    metrics = eval_plugin.get_all_metrics()
+    
+    print(f'Average accuracy: {metrics["Top1_Acc_Stream/eval_phase/test_stream/Task000"][1][0] * 100.}')
+    wandb.log({'ACC' : metrics["Top1_Acc_Stream/eval_phase/test_stream/Task000"][1][0] * 100.})
+
+    return result
 
 def seed_everything(seed=42):
     random.seed(seed)
@@ -546,8 +553,11 @@ def cl_task(args):
         save_results_cl(args, all_warm_up_losses, all_train_losses, final_accuracy, top_evecs=TOP_EVECS)
         return
     
+    eval_plugin = EvaluationPlugin(
+        StreamAccuracy(),
+    )
     custom_cl_strategy = CustomCLStrategy(
-        model, optimizer, criterion, lr, train_mb_size=batch_size, train_epochs=5, eval_mb_size=batch_size, device=DEVICE, )
+        model, optimizer, criterion, lr, train_mb_size=batch_size, train_epochs=5, eval_mb_size=batch_size, evaluator = eval_plugin, device=DEVICE)
 
     # for the overlap experiments 
     if args.log_overlaps and hasattr(optimizer, '_log_overlaps'):
@@ -589,7 +599,12 @@ def cl_task(args):
 
     print('Computing accuracy on the test set')
     final_accuracy = custom_cl_strategy.eval(test_stream)
+
+    print(f'Average accuracy: {final_accuracy["Top1_Acc_Stream/eval_phase/test_stream/Task000"] * 100.}')
+    wandb.log({'ACC' : final_accuracy["Top1_Acc_Stream/eval_phase/test_stream/Task000"] * 100.})
+
     save_results_cl(args, all_warm_up_losses, all_train_losses, final_accuracy, top_evecs=TOP_EVECS)
+    print(final_accuracy)
 
 def main(args):
     if not args.debug:
