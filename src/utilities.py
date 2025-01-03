@@ -33,7 +33,8 @@ DEFAULT_PHYS_BS = 1000
 def iterate_dataset(dataset: Dataset, batch_size: int, device = 'cpu'):
     """Iterate through a dataset, yielding batches of data."""
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
-    for batch_X, batch_y in loader:
+    for batch in loader:
+        batch_X, batch_y, *rest = batch
         yield batch_X.to(device), batch_y.to(device)
 
 def compute_hvp(network: nn.Module, loss_fn: nn.Module,

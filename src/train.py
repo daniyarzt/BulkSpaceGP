@@ -64,6 +64,7 @@ def arg_parser():
     # CL task 
     parser.add_argument('--n_experiences', type=int, default=2, required=False)
     parser.add_argument('--n_bulk_batches', type=int, default=1)
+    parser.add_argument('--hessian_subset_size', type=int, default=1000)
 
     # Additional logs and metrics 
     parser.add_argument('--save_evecs', action=BooleanOptionalAction, default=False)
@@ -588,14 +589,10 @@ def cl_task(args):
         all_warm_up_training_steps.append(warm_up_training_steps)
 
         if hasattr(optimizer, 'append_evecs'):
-            train_dataloader = get_partial_dataloader(experience.dataset, train_subset_size, args.batch_size)
-            for i, batch in zip(range(args.n_bulk_batches), train_dataloader):
-                images, labels, *rest = batch
-                images = images.to(DEVICE)
-                labels = labels.to(DEVICE)
-                dataset = TensorDataset(images, labels)
-
-                optimizer.append_evecs(model, criterion, dataset)
+            subset_indices = np.random.choice(len(experience.dataset), args.hessian_subset_size, replace=False)
+            partial_dataset = Subset(experience.dataset, subset_indices)
+    
+            optimizer.append_evecs(model, criterion, partial_dataset)
 
     print('Computing accuracy on the test set')
     final_accuracy = custom_cl_strategy.eval(test_stream)
