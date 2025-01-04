@@ -65,6 +65,8 @@ def arg_parser():
     parser.add_argument('--n_experiences', type=int, default=2, required=False)
     parser.add_argument('--n_bulk_batches', type=int, default=1)
     parser.add_argument('--hessian_subset_size', type=int, default=1000)
+    parser.add_argument('--mode', choices=['average', 'gs', 'only_first', 'only_last'], default='gs')
+    parser.add_argument('--n_evecs', type=int, default=10)
 
     # Additional logs and metrics 
     parser.add_argument('--save_evecs', action=BooleanOptionalAction, default=False)
@@ -173,7 +175,7 @@ def get_optimizer(args, model):
     elif args.algo == "Top-SGD":
         optimizer = TopSGD(model.parameters(), lr=lr, batch_size=batch_size, device=DEVICE)
     elif args.algo == "prev_Bulk-SGD":
-        optimizer = CLBulkSGD(model.parameters(), lr=lr, batch_size=batch_size, device=DEVICE)
+        optimizer = CLBulkSGD(model.parameters(), lr=lr, batch_size=batch_size, device=DEVICE, mode=args.mode, n_evecs=args.n_evecs)
     else:
         raise NotImplementedError()
     return optimizer
