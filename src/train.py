@@ -26,6 +26,8 @@ from avalanche.logging import InteractiveLogger
 from avalanche.training.plugins import EvaluationPlugin
 
 from avalanche.training.supervised import EWC, AGEM
+from gpm_baseline import GPM
+from collections import OrderedDict
 
 DEVICE = 'cpu'
 
@@ -86,6 +88,8 @@ def train_avalanche(args, strategy, benchmark):
     training_steps_per_batch, per_batch_losses = training_statistics["Loss_MB/train_phase/train_stream/Task000"]
     training_steps_per_epoch, per_epoch_losses = training_statistics["Loss_Epoch/train_phase/train_stream/Task000"]
 
+    print(training_statistics)
+
     epoch_size = len(training_steps_per_batch) // (args.n_experiences * args.epochs)
 
     all_train_losses = [(per_batch_losses, per_epoch_losses, [x*args.batch_size for x in training_steps_per_batch], [x*args.batch_size*epoch_size for x in training_steps_per_epoch])]
@@ -97,6 +101,7 @@ def run_avalanche(args, strategy_name, hyperparamters, model, optimizer, criteri
     strategies = {
         "ewc": EWC,
         "agem": AGEM,
+        "gpm" : GPM
     }
     
     eval_plugin = EvaluationPlugin(
@@ -133,13 +138,16 @@ def seed_everything(seed=42):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-def get_model(input_size : int, output_size : int, args) -> nn.Module:
+def get_model(input_size : int, output_size : int, args, device, bias=True) -> nn.Module:
     # Model definitions could be moved to a separate file...  
     if args.model == 'MLP':
         # Define the MLP model 
         class MLP(nn.Module):
-            def __init__(self, input_size, output_size, hidden_sizes):
+            def __init__(self, input_size, output_size, hidden_sizes, bias):
                 super(MLP, self).__init__()
+                # Needed for GPM 
+                self.act=OrderedDict()
+                self.n_lin = len(hidden_sizes) + 1
                 
                 layers = []
                 in_size = input_size 
@@ -150,17 +158,23 @@ def get_model(input_size : int, output_size : int, args) -> nn.Module:
                             layers.append(nn.ReLU())
                         elif args.activation == 'tanh':
                             layers.append(nn.Tanh())
-                    layers.append(nn.Linear(in_size, hidden_size))
+                    layers.append(nn.Linear(in_size, hidden_size, bias=bias))
                     in_size = hidden_size
                 
-                layers.append(nn.Linear(in_size, output_size).to(DEVICE))
+                layers.append(nn.Linear(in_size, output_size, bias=bias).to(device))
                 self.model = nn.Sequential(*layers)
                 
             def forward(self, x):
                 x = x.view(-1, 28 * 28)
-                return self.model(x)
+                i = 1
+                for layer in self.model:
+                    if isinstance(layer, nn.Linear):
+                        self.act[f'Lin{i}'] = x
+                        i += 1
+                    x = layer(x)
+                return x
             
-        return MLP(input_size, output_size, args.hidden_sizes)
+        return MLP(input_size, output_size, args.hidden_sizes, bias)
     else:
         raise NotImplementedError()
     
@@ -168,7 +182,7 @@ def get_optimizer(args, model):
     lr = args.lr
     batch_size = args.batch_size
 
-    if args.algo in ["SGD", "ewc", "agem"]:
+    if args.algo in ["SGD", "ewc", "agem", "gpm"]:
         optimizer = optim.SGD(model.parameters(), lr=lr)
     elif args.algo == "Bulk-SGD":
         optimizer = BulkSGD(model.parameters(), lr=lr, batch_size=batch_size, device=DEVICE)
@@ -384,7 +398,7 @@ def projected_training(args):
     test_loader = DataLoader(dataset=test_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
 
     # Initialize the model, loss_function, and optimizer
-    model = get_model(input_size, output_size, args).to(DEVICE)
+    model = get_model(input_size, output_size, args, DEVICE).to(DEVICE)
     wandb.watch(model, log_graph=True)
     if args.loss == 'cross_entropy_loss':
         criterion = nn.CrossEntropyLoss()   
@@ -532,7 +546,13 @@ def cl_task(args):
             return warm_up_losses, train_losses, warm_up_training_steps
 
     # Initialize the model, loss_function, and optimizer, strategy
-    model = get_model(input_size, output_size, args).to(DEVICE)
+    if args.algo == "gpm":
+        bias = False
+        print("Important: GPM does not support bias")
+    else:
+        bias = True
+
+    model = get_model(input_size, output_size, args, DEVICE, bias).to(DEVICE)
     criterion = nn.CrossEntropyLoss()
     optimizer = get_optimizer(args, model)
     if args.algo in baselines:
@@ -548,6 +568,12 @@ def cl_task(args):
                 "train_mb_size": batch_size,
                 "train_epochs": args.epochs,
                 "eval_mb_size": batch_size,
+            },
+            "gpm" : {
+                "train_mb_size": batch_size,
+                "train_epochs": args.epochs,
+                "eval_mb_size": batch_size,
+                "lr": args.lr,
             }
         }
 
