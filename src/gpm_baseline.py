@@ -4,124 +4,15 @@ import torch
 import torch.optim as optim
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.autograd import Variable
 
-import torchvision
-from torchvision import datasets, transforms
-
-import os
-import os.path
 from collections import OrderedDict
 
-import matplotlib.pyplot as plt
 import numpy as np
-import seaborn as sn
 import argparse
 from copy import deepcopy
 
 from avalanche.benchmarks import PermutedMNIST
 from avalanche.training.templates import SupervisedTemplate
-
-from avalanche.evaluation.metrics import MinibatchLoss, EpochLoss, TaskAwareLoss, StreamAccuracy
-from avalanche.logging import InteractiveLogger
-from avalanche.training.plugins import EvaluationPlugin
-from torch.utils.data import DataLoader, Subset, TensorDataset
-
-## Define MLP model
-class MLPNet(nn.Module):
-    def __init__(self, n_hidden=100, n_outputs=10):
-        super(MLPNet, self).__init__()
-        self.act=OrderedDict()
-        self.lin1 = nn.Linear(784,n_hidden,bias=False)
-        self.lin2 = nn.Linear(n_hidden,n_hidden, bias=False)
-        self.fc1  = nn.Linear(n_hidden, n_outputs, bias=False)
-        
-    def forward(self, x):
-        x = x.view(-1, 28 * 28)
-        self.act['Lin1']=x
-        x = self.lin1(x)        
-        x = F.relu(x)
-        self.act['Lin2']=x
-        x = self.lin2(x)        
-        x = F.relu(x)
-        self.act['fc1']=x
-        x = self.fc1(x)
-        return x 
-    
-
-def get_our_model(input_size : int, output_size : int, args, device, bias=True) -> nn.Module:
-    # Model definitions could be moved to a separate file...  
-    if args.model == 'MLP':
-        # Define the MLP model 
-        class MLP(nn.Module):
-            def __init__(self, input_size, output_size, hidden_sizes, bias):
-                super(MLP, self).__init__()
-                self.act=OrderedDict()
-                self.n_lin = len(hidden_sizes) + 1
-                
-                layers = []
-                in_size = input_size 
-
-                for layer_id, hidden_size in enumerate(hidden_sizes):
-                    if layer_id > 0:
-                        if args.activation == 'relu':
-                            layers.append(nn.ReLU())
-                        elif args.activation == 'tanh':
-                            layers.append(nn.Tanh())
-                    layers.append(nn.Linear(in_size, hidden_size, bias=bias))
-                    in_size = hidden_size
-                
-                layers.append(nn.Linear(in_size, output_size, bias=bias).to(device))
-                self.model = nn.Sequential(*layers)
-                
-            def forward(self, x):
-                x = x.view(-1, 28 * 28)
-                i = 1
-                for layer in self.model:
-                    if isinstance(layer, nn.Linear):
-                        self.act[f'Lin{i}'] = x
-                        i += 1
-                    x = layer(x)
-                return x
-            
-        return MLP(input_size, output_size, args.hidden_sizes, bias)
-    else:
-        raise NotImplementedError()
-
-def get_model(model):
-    return deepcopy(model.state_dict())
-
-def set_model_(model,state_dict):
-    model.load_state_dict(deepcopy(state_dict))
-    return
-
-def test (eval_mb_size, model, device, x, y, criterion):
-    model.eval()
-    total_loss = 0
-    total_num = 0 
-    correct = 0
-    r=np.arange(x.size(0))
-    np.random.shuffle(r)
-    r=torch.LongTensor(r).to(device)
-    with torch.no_grad():
-        # Loop batches
-        for i in range(0,len(r),eval_mb_size):
-            if i+eval_mb_size<=len(r): b=r[i:i+eval_mb_size]
-            else: b=r[i:]
-            data = x[b].view(-1,28*28)
-            data, target = data.to(device), y[b].to(device)
-            output = model(data)
-            loss = criterion(output, target)
-            pred = output.argmax(dim=1, keepdim=True) 
-            
-            correct    += pred.eq(target.view_as(pred)).sum().item()
-            total_loss += loss.data.cpu().numpy().item()*len(b)
-            total_num  += len(b)
-
-    acc = 100. * correct / total_num
-    final_loss = total_loss / total_num
-    return final_loss, acc
-
 
 def get_representation_matrix (net, device, x, y=None): 
     # Collect activations by forward pass
@@ -424,30 +315,3 @@ class GPM(SupervisedTemplate):
             self.feature_list = update_GPM (model, mat_list, threshold, self.feature_list)
 
         return total_losses, total_epoch_losses, training_steps_per_batch, training_steps_per_epoch
-
-
-if __name__ == "__main__":
-    # Training parameters
-    parser = argparse.ArgumentParser(description='Sequential PMNIST with GPM')
-
-    args = parser.parse_args()
-
-    args.n_experiences = 3
-    args.batch_size = 64
-    args.model = "MLP"
-    args.activation = "relu"
-    args.hidden_sizes = [100, 100, 100]
-    args.seed = 42
-    args.lr = 0.01
-    args.epochs = 2
-    args.train_mb_size = 64
-    args.eval_mb_size = 64
-    
-
-    print('='*100)
-    print('Arguments =')
-    for arg in vars(args):
-        print('\t'+arg+':',getattr(args,arg))
-    print('='*100)
-
-    run(args)

@@ -57,6 +57,7 @@ def arg_parser():
     parser.add_argument('--model', choices = ['MLP'], default='MLP')
     parser.add_argument('--hidden_sizes', type=int, nargs='+', required=False)
     parser.add_argument('--activation', choices = ['relu','tanh'], default='relu')
+    parser.add_argument('--nobias', action=BooleanOptionalAction, default=False)
 
     # projected_training args
     parser.add_argument('--warm_up_epochs', type=int, default=0, required=False)
@@ -559,13 +560,10 @@ def cl_task(args):
             return warm_up_losses, train_losses, warm_up_training_steps
 
     # Initialize the model, loss_function, and optimizer, strategy
-    if args.algo == "gpm":
-        bias = False
-        print("Important: GPM does not support bias")
-    else:
-        bias = True
+    if args.algo == "gpm" and args.nobias == False:
+        raise Exception("GPM does not support bias (use --nobias)")
 
-    model = get_model(input_size, output_size, args, DEVICE, bias).to(DEVICE)
+    model = get_model(input_size, output_size, args, DEVICE, not args.nobias).to(DEVICE)
     criterion = nn.CrossEntropyLoss()
     optimizer = get_optimizer(args, model)
     if args.algo in baselines:
