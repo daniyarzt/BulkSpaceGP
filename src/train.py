@@ -120,6 +120,19 @@ def run_avalanche(args, strategy_name, hyperparamters, model, optimizer, criteri
         evaluator=eval_plugin, 
         plugins = [wandb_acc_logger]
     )
+    if strategy_name == "gpm":
+
+        all_train_losses = []
+
+        for exp_id, experience in enumerate(benchmark.train_stream):
+            print(f"Start of experience {exp_id + 1}: {experience}")
+            train_losses = strategy.train(experience)
+            all_train_losses.append(train_losses)
+            print("Training completed.")
+
+        # Eval on test stream
+        final_accuracy = strategy.eval(benchmark.test_stream)
+        return final_accuracy, all_train_losses
     
     result =  train_avalanche(args, strategy, benchmark)
 

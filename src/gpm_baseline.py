@@ -16,11 +16,7 @@ from collections import OrderedDict
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sn
-import pandas as pd
-import random
-import pdb
-import argparse,time
-import math
+import argparse
 from copy import deepcopy
 
 from avalanche.benchmarks import PermutedMNIST
@@ -293,28 +289,12 @@ class GPM(SupervisedTemplate):
         self.lr = lr
         self._criterion = criterion
 
-    def log_losses(self, experience, epoch_idx, losses):
-        for mb_idx, loss in enumerate(losses):
-            # Log the loss using the evaluator
-            self.evaluator.emit_metric(
-                name="Loss_MB",
-                value=loss.item(),
-                x=mb_idx,  # Minibatch index (optional)
-                experience=experience  # Current experience
-            )
-        
+    def epoch_loss(self, losses):        
         # Compute average loss for the epoch
-        epoch_loss = sum(losses)
+        sum_losses = sum(losses)
         num_minibatches = len(losses)
-        avg_epoch_loss = epoch_loss / num_minibatches
-        
-        # Log epoch loss
-        self.evaluator.emit_metric(
-            name="Loss_Epoch",
-            value=avg_epoch_loss,
-            x=epoch_idx,
-            experience=experience
-        )
+        epoch_loss = sum_losses / num_minibatches
+        return epoch_loss
 
     def train_epoch(self, model, device, x, y, optimizer,criterion):
         train_mb_size = self.train_mb_size
@@ -324,6 +304,8 @@ class GPM(SupervisedTemplate):
         r=torch.LongTensor(r).to(device)
 
         losses = []
+        training_steps = []
+        n = 0
         # Loop batches
         for i in range(0,len(r),train_mb_size):
             if i+train_mb_size<=len(r): b=r[i:i+train_mb_size]
@@ -332,11 +314,13 @@ class GPM(SupervisedTemplate):
             data, target = data.to(device), y[b].to(device)
             optimizer.zero_grad()        
             output = model(data)
-            loss = criterion(output, target)        
+            loss = criterion(output, target)      
+            losses.append(loss.item())  
             loss.backward()
             optimizer.step()
-            losses.append(loss.item())
-        return losses
+            n += len(b)
+            training_steps.append(n)
+        return losses, training_steps
 
     def train_epoch_projected(self, model,device,x,y,optimizer,criterion,feature_mat):
         train_mb_size = self.train_mb_size
@@ -344,34 +328,34 @@ class GPM(SupervisedTemplate):
         r=np.arange(x.size(0))
         np.random.shuffle(r)
         r=torch.LongTensor(r).to(device)
+
+        losses = []
+        training_steps = []
+        n = 0
         # Loop batches
         for i in range(0,len(r),train_mb_size):
-            self._before_training_iteration()
             if i+train_mb_size<=len(r): b=r[i:i+train_mb_size]
             else: b=r[i:]
             data = x[b].view(-1,28*28)
             data, target = data.to(device), y[b].to(device)
             optimizer.zero_grad()
 
-            self._before_forward()
             output = model(data)
-            self._after_forward()
 
-            loss = criterion(output, target)   
+            loss = criterion(output, target)
+            losses.append(loss.item())  
 
-            self._before_backward()     
             loss.backward()
-            self._after_backward()    
             # Gradient Projections 
             for k, (m,params) in enumerate(model.named_parameters()):
                 sz =  params.grad.data.size(0)
                 params.grad.data = params.grad.data - torch.mm(params.grad.data.view(sz,-1),\
                                                         feature_mat[k]).view(params.size())
-            self._before_update()
             optimizer.step()
-            self._after_update()
-            self._after_training_iteration()
-
+            n += len(b)
+            training_steps.append(n)
+        return losses, training_steps
+        
     def train(self, experience):
         model = self.model
         criterion = self._criterion
@@ -382,13 +366,6 @@ class GPM(SupervisedTemplate):
 
         train_subset_size = None
 
-        self.experience = experience
-
-        self._before_training()
-        self._before_train_dataset_adaptation()
-        self._after_eval_dataset_adaptation()
-
-
         train_dataloader = get_partial_dataloader(
                     experience.dataset, train_subset_size, self.train_mb_size)
         # specify threshold hyperparameter
@@ -397,8 +374,13 @@ class GPM(SupervisedTemplate):
     
         xtrain, ytrain = get_dataset(train_dataloader)
 
+        total_losses = []
+        total_epoch_losses = []
+
+        training_steps_per_batch = []
+        training_steps_per_epoch = []
+
         #lr = args.lr 
-        self._before_training_exp()
         if task_id==0:
             #print ('Model parameters ---')
             #for k_t, (m, param) in enumerate(model.named_parameters()):
@@ -406,12 +388,16 @@ class GPM(SupervisedTemplate):
             #print ('-'*40)
 
             self.feature_list =[]
+            self.curr_steps = 0
             for epoch in range(1, self.train_epochs+1):
-                self._before_training_epoch()
                 # Train
-                self.train_epoch(model, device, xtrain, ytrain, optimizer, criterion)
+                losses, training_steps = self.train_epoch(model, device, xtrain, ytrain, optimizer, criterion)
+                training_steps_per_batch += [x + self.curr_steps for x in training_steps]
+                total_losses += losses
+            total_epoch_losses.append(self.epoch_loss(losses))
+            self.curr_steps = training_steps_per_batch[-1]
+            training_steps_per_epoch.append(self.curr_steps)
 
-                self._after_training_epoch()
             # Memory Update  
             mat_list = get_representation_matrix (model, device, xtrain, ytrain)
             self.feature_list = update_GPM (model, mat_list, threshold, self.feature_list)
@@ -426,20 +412,18 @@ class GPM(SupervisedTemplate):
                 feature_mat.append(Uf)
             print ('-'*40)
             for epoch in range(1,self.train_epochs+1):
-                self._before_training_epoch()
                 # Train 
-                self.train_epoch_projected(model,device,xtrain, ytrain,optimizer,criterion,feature_mat)
-
-                self._after_training_epoch()
-                #print('Epoch {:3d} | Train: loss={:.3f}, acc={:5.1f}% | time={:5.1f}ms |'.format(epoch,\
-                #                                        tr_loss, tr_acc, 1000*(clock1-clock0)),end='')
+                losses, training_steps = self.train_epoch_projected(model,device,xtrain, ytrain,optimizer,criterion,feature_mat)
+                training_steps_per_batch += [x + self.curr_steps for x in training_steps]
+                total_losses += losses
+            total_epoch_losses.append(self.epoch_loss(losses))
+            self.curr_steps = training_steps_per_batch[-1]
+            training_steps_per_epoch.append(self.curr_steps)
             # Memory Update 
             mat_list = get_representation_matrix (model, device, xtrain, ytrain)
             self.feature_list = update_GPM (model, mat_list, threshold, self.feature_list)
-            self._after_training_exp()
 
-        self._after_training()
-        #return losses, per_epoch_losses, training_steps_per_batch, training_steps_per_epoch
+        return total_losses, total_epoch_losses, training_steps_per_batch, training_steps_per_epoch
 
 
 if __name__ == "__main__":
