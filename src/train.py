@@ -67,6 +67,8 @@ def arg_parser():
     parser.add_argument('--hessian_subset_size', type=int, default=1000)
     parser.add_argument('--mode', choices=['average', 'gs', 'only_first', 'only_last'], default='gs')
     parser.add_argument('--n_evecs', type=int, default=10)
+    parser.add_argument('--penalize_distance', action=BooleanOptionalAction, default=False)
+    parser.add_argument('--penalty_lambda', type=float, default=0.01)
 
     # Additional logs and metrics 
     parser.add_argument('--save_evecs', action=BooleanOptionalAction, default=False)
@@ -175,7 +177,10 @@ def get_optimizer(args, model):
     elif args.algo == "Top-SGD":
         optimizer = TopSGD(model.parameters(), lr=lr, batch_size=batch_size, device=DEVICE)
     elif args.algo == "prev_Bulk-SGD":
-        optimizer = CLBulkSGD(model.parameters(), lr=lr, batch_size=batch_size, device=DEVICE, mode=args.mode, n_evecs=args.n_evecs)
+        optimizer = CLBulkSGD(model.parameters(), lr=lr, batch_size=batch_size, device=DEVICE, 
+                              mode=args.mode, n_evecs=args.n_evecs,
+                              penalize_distance=args.penalize_distance, 
+                              penalty_lambda=args.penalty_lambda)
     else:
         raise NotImplementedError()
     return optimizer
@@ -232,7 +237,11 @@ def train(train_loader, model, criterion, optimizer, lr, num_epochs: int, algo: 
 
                 # Forward pass
                 outputs = model(images).to(DEVICE)
+
                 loss = criterion(outputs, labels)
+                if hasattr(optimizer, 'penalize_distance') and optimizer.penalize_distance:
+                    loss += optimizer.penalty(model)
+                    
                 loss_sum += loss.item()
                 batches += 1
                 losses.append(loss.item())
@@ -451,6 +460,8 @@ def cl_task(args):
     batch_size = args.batch_size
     lr = args.lr
     train_subset_size = None
+    if train_subset_size is not None:
+        print('\n\n\nOOOOOH MY GOOOOOD YOU ARE NOT USING FULL TRAIN SUBSET SIZE !!!!!!!!!!!!!!!!!!!!!!!!!\n\n\n\n')
     holdout_size = 500
 
     # Load the dataset
@@ -591,10 +602,14 @@ def cl_task(args):
         all_warm_up_training_steps.append(warm_up_training_steps)
 
         if hasattr(optimizer, 'append_evecs'):
-            subset_indices = np.random.choice(len(experience.dataset), args.hessian_subset_size, replace=False)
-            partial_dataset = Subset(experience.dataset, subset_indices)
-    
-            optimizer.append_evecs(model, criterion, partial_dataset)
+            for i in range(args.n_bulk_batches):
+                subset_indices = np.random.choice(len(experience.dataset), args.hessian_subset_size, replace=False) 
+                partial_dataset = Subset(experience.dataset, subset_indices)
+
+                optimizer.append_evecs(model, criterion, partial_dataset)
+        
+        if hasattr(optimizer, 'penalize_distance') and optimizer.penalize_distance:
+            optimizer.update_weights(model)
 
     print('Computing accuracy on the test set')
     final_accuracy = custom_cl_strategy.eval(test_stream)
