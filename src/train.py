@@ -209,10 +209,6 @@ def train(train_loader, model, criterion, optimizer, lr, num_epochs: int, algo: 
     if args is not None:
         holdout_acc_freq = args.holdout_acc_freq
     
-    save_evecs = False
-    if args is not None and args.save_evecs:
-        save_evecs = True
-
     losses = []
     per_epoch_losses = []
     training_steps_per_batch = []
@@ -224,7 +220,7 @@ def train(train_loader, model, criterion, optimizer, lr, num_epochs: int, algo: 
         training_steps_per_epoch.append(cur_training_steps)
         with time_block("Training epoch"):
             for batch in tqdm(train_loader, "training loop..."):
-                images, labels, *rest = batch
+                images, labels, *_ = batch
                 images = images.to(DEVICE)
                 labels = labels.to(DEVICE)
 
@@ -327,7 +323,7 @@ def eval(test_loader, model, verbose = True):
         correct = 0
         total = 0
         for batch in test_loader:
-            images, labels, *rest = batch
+            images, labels, *_ = batch
 
             images = images.to(DEVICE) 
             labels = labels.to(DEVICE)
