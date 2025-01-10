@@ -271,30 +271,11 @@ def train(train_loader, model, criterion, optimizer, lr, num_epochs: int, algo: 
                     SHARPNESS_TIMER += 1
 
                 # Backwards pass and optimization
-                # TODO: get rid of the if clause
-                if algo == 'SGD':
-                    loss.backward()
-                    optimizer.step()
-                    optimizer.zero_grad()
-                elif algo == 'Bulk-SGD':
-                    loss.backward()
+                loss.backward()
+                if algo in set(['Bulk-SGD', 'Top-SGD']):
                     dataset = TensorDataset(images, labels)
                     optimizer.calculate_evecs(model, criterion, dataset)
-                    optimizer.step()
-                    optimizer.zero_grad()
-                elif algo == 'Top-SGD':
-                    loss.backward()
-                    dataset = TensorDataset(images, labels)
-                    optimizer.calculate_evecs(model, criterion, dataset)
-                    optimizer.step()
-                    optimizer.zero_grad()
-                elif algo == 'prev_Bulk-SGD':
-                    loss.backward()
-                    dataset = TensorDataset(images, labels)
-                    optimizer.step()
-                    optimizer.zero_grad()
-                else:
-                    raise NotImplementedError()
+                optimizer.step()
                 
                 if args.save_evecs and hasattr(optimizer, 'evecs') and optimizer.evecs is not None :
                     if TOP_EVEC_TIMER % TOP_EVEC_RECORD_FREQ == 0:
