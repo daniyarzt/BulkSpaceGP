@@ -27,6 +27,7 @@ from avalanche.training.plugins import EvaluationPlugin
 
 from avalanche.training.supervised import EWC, AGEM
 from gpm_baseline import GPM
+from ogd_baseline import OGDPlugin
 from collections import OrderedDict
 
 DEVICE = 'cpu'
@@ -89,22 +90,30 @@ def train_avalanche(args, strategy, benchmark):
     training_steps_per_batch, per_batch_losses = training_statistics["Loss_MB/train_phase/train_stream/Task000"]
     training_steps_per_epoch, per_epoch_losses = training_statistics["Loss_Epoch/train_phase/train_stream/Task000"]
 
-    print(training_statistics)
+    print(training_statistics.keys())
 
     epoch_size = len(training_steps_per_batch) // (args.n_experiences * args.epochs)
 
-    all_train_losses = [(per_batch_losses, per_epoch_losses, [x*args.batch_size for x in training_steps_per_batch], [x*args.batch_size*epoch_size for x in training_steps_per_epoch])]
+    cat_all_train_losses = (per_batch_losses, per_epoch_losses, [x*args.batch_size for x in training_steps_per_batch], [x*args.batch_size*epoch_size for x in training_steps_per_epoch])
+    all_train_losses = []
+    batch_offset = 0
+    epoch_offset = 0
+    for i in range(args.n_experiences):
+        n_epoch_start = i*args.epochs
+        n_epoch_end = (i+1)*args.epochs
+        n_batch_start = i*epoch_size*args.epochs
+        n_batch_end = (i+1)*epoch_size*args.epochs
+        l0, l1, l2, l3 = cat_all_train_losses[0][n_batch_start:n_batch_end], cat_all_train_losses[1][n_epoch_start:n_epoch_end], cat_all_train_losses[2][n_batch_start:n_batch_end], cat_all_train_losses[3][n_epoch_start:n_epoch_end]
+        l2 = [x-batch_offset for x in l2]
+        l3 = [x-epoch_offset for x in l3]
+        batch_offset = l2[-1]
+        epoch_offset = l3[-1]
+        all_train_losses.append((l0, l1, l2, l3))
     final_accuracy = strategy.eval(benchmark.test_stream)
     return final_accuracy, all_train_losses
 
 
 def run_avalanche(args, strategy_name, hyperparamters, model, optimizer, criterion, benchmark, holdout_datasets):
-    strategies = {
-        "ewc": EWC,
-        "agem": AGEM,
-        "gpm" : GPM
-    }
-    
     eval_plugin = EvaluationPlugin(
         MinibatchLoss(),
         EpochLoss(),
@@ -113,14 +122,28 @@ def run_avalanche(args, strategy_name, hyperparamters, model, optimizer, criteri
     )
     wandb_acc_logger = WandBAccuracyLogger(holdout_datasets, args.batch_size, args.holdout_acc_freq)
 
-    strategy = strategies[strategy_name](
+    if strategy_name == "ogd":
+        strategy = SupervisedTemplate(
         model=model,
         optimizer=optimizer,
         criterion=criterion,
         **hyperparamters,
-        evaluator=eval_plugin, 
-        plugins = [wandb_acc_logger]
-    )
+        evaluator=eval_plugin
+        )
+    else:
+        strategies = {
+            "ewc": EWC,
+            "agem": AGEM,
+            "gpm" : GPM,
+        }
+        strategy = strategies[strategy_name](
+            model=model,
+            optimizer=optimizer,
+            criterion=criterion,
+            **hyperparamters,
+            evaluator=eval_plugin, 
+            plugins = [wandb_acc_logger]
+        )
     if strategy_name == "gpm":
 
         all_train_losses = []
@@ -196,7 +219,7 @@ def get_optimizer(args, model):
     lr = args.lr
     batch_size = args.batch_size
 
-    if args.algo in ["SGD", "ewc", "agem", "gpm"]:
+    if args.algo in ["SGD", "ewc", "agem", "gpm", "ogd"]:
         optimizer = optim.SGD(model.parameters(), lr=lr)
     elif args.algo == "Bulk-SGD":
         optimizer = BulkSGD(model.parameters(), lr=lr, batch_size=batch_size, device=DEVICE)
@@ -585,6 +608,12 @@ def cl_task(args):
                 "train_epochs": args.epochs,
                 "eval_mb_size": batch_size,
                 "lr": args.lr,
+            },
+            "ogd" : {
+                "train_mb_size": batch_size,
+                "train_epochs": args.epochs,
+                "eval_mb_size": batch_size,
+                 "plugins" : [OGDPlugin(10)]
             }
         }
 

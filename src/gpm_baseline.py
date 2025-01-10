@@ -1,17 +1,9 @@
 # https://github.com/sahagobinda/GPM/blob/main/main_pmnist.py
 
 import torch
-import torch.optim as optim
-import torch.nn as nn
-import torch.nn.functional as F
-
-from collections import OrderedDict
+from torch.utils.data import DataLoader, Subset
 
 import numpy as np
-import argparse
-from copy import deepcopy
-
-from avalanche.benchmarks import PermutedMNIST
 from avalanche.training.templates import SupervisedTemplate
 
 def get_representation_matrix (net, device, x, y=None): 
@@ -106,39 +98,6 @@ def get_dataset(loader):
     all_data = torch.cat(data_list, dim=0)
     all_labels = torch.cat(labels_list, dim=0)
     return all_data, all_labels
-
-def run(args):
-    ## Device Setting 
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    torch.manual_seed(args.seed)
-    np.random.seed(args.seed)
-    ## Load PMNIST DATASET
-    benchmark = PermutedMNIST(n_experiences=args.n_experiences)
-    train_stream = benchmark.train_stream
-    test_stream = benchmark.test_stream
-
-    acc_matrix=np.zeros((10,10))
-    criterion = torch.nn.CrossEntropyLoss()
-
-    input_size = 28 * 28
-    output_size = 10
-
-    model = get_our_model(input_size, output_size, args, device, False)#MLPNet(args.n_hidden, args.n_outputs).to(device)
-    optimizer = optim.SGD(model.parameters(), lr=args.lr)
-
-    strategy = GPM(model=model, optimizer=optimizer, criterion=criterion, lr=args.lr, train_mb_size=args.batch_size, train_epochs=args.epochs, eval_mb_size=args.batch_size, device=device)
-    all_train_losses = []
-
-    for exp_id, experience in enumerate(train_stream):
-        print(f"Start of experience {exp_id + 1}: {experience}")
-        train_losses = strategy.train(experience)
-        print("Training completed.")
-
-    # Eval on test stream
-    final_accuracy = strategy.eval(test_stream)
-        
-    
-    return final_accuracy, all_train_losses
 
 
 # TODO: Refactoring: instead of passing subset size, pass the subset itself. Then it will be consistent. 
@@ -271,6 +230,8 @@ class GPM(SupervisedTemplate):
         training_steps_per_batch = []
         training_steps_per_epoch = []
 
+        self.curr_steps = 0
+
         #lr = args.lr 
         if task_id==0:
             #print ('Model parameters ---')
@@ -279,7 +240,6 @@ class GPM(SupervisedTemplate):
             #print ('-'*40)
 
             self.feature_list =[]
-            self.curr_steps = 0
             for epoch in range(1, self.train_epochs+1):
                 # Train
                 losses, training_steps = self.train_epoch(model, device, xtrain, ytrain, optimizer, criterion)
