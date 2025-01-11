@@ -14,7 +14,7 @@ class OGDPlugin(SupervisedPlugin):
         Initialize the OGD plugin.
 
         Args:
-            memory_size (int): Number of gradient directions to store.
+            n_subset (int): Number of gradient directions to store per task.
         """
         super().__init__()
         self.S = []  # Stores gradient directions
@@ -72,9 +72,12 @@ class OGDPlugin(SupervisedPlugin):
         dataset_size = len(strategy.experience.dataset)
         random_indices = torch.randperm(dataset_size)[:self.n_subset].tolist()
         subset = Subset(strategy.experience.dataset, random_indices)
+
+        loader = DataLoader(subset, batch_size=1, shuffle=False)
         
         # for (x, y) ∈ T_t and k ∈ [1, c] s.t. yk = 1 do
-        for x, y, *_ in subset:
+        for x, y, *_ in loader:
+            x, y = x.to(strategy.device), y.to(strategy.device)
 
             # Calculate ∇f_k(x; w)
             strategy.model.zero_grad()
@@ -93,6 +96,6 @@ class OGDPlugin(SupervisedPlugin):
                     u[idx] -= param_grad
 
             # S ← S ∪ {u}
-            self._store_gradient(self._clone_grads(strategy.model.parameters()))
+            self._store_gradient(u)
         strategy.model.zero_grad()
         print("Gradients stored.")

@@ -18,7 +18,7 @@ import numpy as np
 from torchsummary import summary
 
 import wandb
-from avalanche.benchmarks import PermutedMNIST
+from avalanche.benchmarks import PermutedMNIST, SplitMNIST, RotatedMNIST
 from avalanche.training.templates import SupervisedTemplate
 
 from avalanche.evaluation.metrics import MinibatchLoss, EpochLoss, TaskAwareLoss, StreamAccuracy, StreamBWT
@@ -53,6 +53,8 @@ def arg_parser():
     parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--lr', type=float, default=0.01)
     parser.add_argument('--loss', type=str, default='cross_entropy_loss')
+
+    parser.add_argument('--benchmark', choices=['splitmnist', 'rotatedmnist', 'permutedmnist'], default='permutedmnist')
 
     # Model parameters 
     parser.add_argument('--model', choices = ['MLP'], default='MLP')
@@ -504,7 +506,17 @@ def cl_task(args):
     holdout_size = 500
 
     # Load the dataset
-    benchmark = PermutedMNIST(n_experiences=args.n_experiences)
+    if args.benchmark == 'permutedmnist':
+        print("Using benchmark: PermutedMNIST")
+        benchmark = PermutedMNIST(n_experiences=args.n_experiences)
+    elif args.benchmark == 'splitmnist':
+        print("Using benchmark: SplitMNIST")
+        benchmark = SplitMNIST(n_experiences=args.n_experiences)
+    elif args.benchmark == 'rotatedmnist':
+        print("Using benchmark: RotatedMNIST")
+        benchmark = RotatedMNIST(n_experiences=args.n_experiences)
+    else:
+        raise NotImplementedError()
     train_stream = benchmark.train_stream
     test_stream = benchmark.test_stream
     input_size = 28 * 28
@@ -612,7 +624,7 @@ def cl_task(args):
                 "train_mb_size": batch_size,
                 "train_epochs": args.epochs,
                 "eval_mb_size": batch_size,
-                 "plugins" : [OGDPlugin(10)]
+                 "plugins" : [OGDPlugin(200)]
             }, 
             "naive" : {
                 "train_mb_size" : batch_size, 
