@@ -245,9 +245,9 @@ class GPM(SupervisedTemplate):
                 losses, training_steps = self.train_epoch(model, device, xtrain, ytrain, optimizer, criterion)
                 training_steps_per_batch += [x + self.curr_steps for x in training_steps]
                 total_losses += losses
-            total_epoch_losses.append(self.epoch_loss(losses))
-            self.curr_steps = training_steps_per_batch[-1]
-            training_steps_per_epoch.append(self.curr_steps)
+                self.curr_steps = training_steps_per_batch[-1]
+                total_epoch_losses.append(self.epoch_loss(losses))
+                training_steps_per_epoch.append(self.curr_steps)
 
             # Memory Update  
             mat_list = get_representation_matrix (model, device, xtrain, ytrain)
@@ -267,9 +267,9 @@ class GPM(SupervisedTemplate):
                 losses, training_steps = self.train_epoch_projected(model,device,xtrain, ytrain,optimizer,criterion,feature_mat)
                 training_steps_per_batch += [x + self.curr_steps for x in training_steps]
                 total_losses += losses
-            total_epoch_losses.append(self.epoch_loss(losses))
-            self.curr_steps = training_steps_per_batch[-1]
-            training_steps_per_epoch.append(self.curr_steps)
+                self.curr_steps = training_steps_per_batch[-1]
+                total_epoch_losses.append(self.epoch_loss(losses))
+                training_steps_per_epoch.append(self.curr_steps)
             # Memory Update 
             mat_list = get_representation_matrix (model, device, xtrain, ytrain)
             self.feature_list = update_GPM (model, mat_list, threshold, self.feature_list)
