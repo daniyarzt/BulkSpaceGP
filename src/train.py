@@ -280,10 +280,11 @@ def train(train_loader, model, criterion, optimizer, lr, num_epochs: int, algo: 
 
                 # Backwards pass and optimization
                 loss.backward()
-                if algo in set(['Bulk-SGD', 'Top-SGD']):
+                if algo in {'Bulk-SGD', 'Top-SGD'}:
                     dataset = TensorDataset(images, labels)
                     optimizer.calculate_evecs(model, criterion, dataset)
                 optimizer.step()
+                optimizer.zero_grad()
                 
                 if args.save_evecs and hasattr(optimizer, 'evecs') and optimizer.evecs is not None :
                     if TOP_EVEC_TIMER % TOP_EVEC_RECORD_FREQ == 0:
