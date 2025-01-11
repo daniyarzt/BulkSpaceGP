@@ -126,14 +126,12 @@ def overlap_top_tr(top_evecs1, top_evecs2, device="cpu"):
     """
     top_evecs1 = top_evecs1.to(device) 
     top_evecs2 = top_evecs2.to(device)
-    assert len(top_evecs1.shape) == 2 and top_evecs1.shape[-1] == top_evecs2.shape[-1]
-    k = top_evecs1.shape[0]
-
-    tr_top1 = torch.sum(top_evecs1 * top_evecs1)  # Tr(P_t)
-    tr_top2 = torch.sum(top_evecs2 * top_evecs2)  # Tr(P'_t)
+    assert len(top_evecs1.shape) == 2 
+    assert top_evecs1.shape[1] >= top_evecs1.shape[0] and top_evecs2.shape[1] >= top_evecs2.shape[0] # Dim of the top space should be less or equal to the model dim
+    assert top_evecs1.shape[-1] == top_evecs2.shape[-1] # Model dimensions should be the same
+    
     tr_composition = torch.sum((top_evecs1 @ top_evecs2.T) ** 2)  # Tr(P_t P'_t)
-
-    return tr_composition / torch.sqrt(tr_top1 * tr_top2)
+    return tr_composition / torch.sqrt(top_evecs1.shape[0] * top_evecs2.shape[0])
 
 def overlap_bulk_tr(top_evecs1, top_evecs2, device="cpu"):
     """
