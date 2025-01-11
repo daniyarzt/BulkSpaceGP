@@ -21,11 +21,11 @@ import wandb
 from avalanche.benchmarks import PermutedMNIST
 from avalanche.training.templates import SupervisedTemplate
 
-from avalanche.evaluation.metrics import MinibatchLoss, EpochLoss, TaskAwareLoss, StreamAccuracy
+from avalanche.evaluation.metrics import MinibatchLoss, EpochLoss, TaskAwareLoss, StreamAccuracy, StreamBWT
 from avalanche.logging import InteractiveLogger
 from avalanche.training.plugins import EvaluationPlugin
 
-from avalanche.training.supervised import EWC, AGEM
+from avalanche.training.supervised import EWC, AGEM, Naive
 from gpm_baseline import GPM
 from ogd_baseline import OGDPlugin
 from collections import OrderedDict
@@ -37,7 +37,7 @@ TOP_EVEC_RECORD_FREQ = 1
 TOP_EVEC_TIMER = 0
 SHARPNESS_TIMER = 0
 SHARPNESS_FREQ = 25
-baselines = ["ewc", "agem", "ogd", "gpm"]
+baselines = ["ewc", "agem", "ogd", "gpm", "naive"]
 
 def arg_parser():
     parser = ArgumentParser(description='Train')
@@ -71,6 +71,8 @@ def arg_parser():
     parser.add_argument('--hessian_subset_size', type=int, default=1000)
     parser.add_argument('--mode', choices=['average', 'gs', 'only_first', 'only_last'], default='gs')
     parser.add_argument('--n_evecs', type=int, default=10)
+    parser.add_argument('--penalize_distance', action=BooleanOptionalAction, default=False)
+    parser.add_argument('--penalty_lambda', type=float, default=0.01)
 
     # Additional logs and metrics 
     parser.add_argument('--save_evecs', action=BooleanOptionalAction, default=False)
@@ -83,9 +85,11 @@ def arg_parser():
 
 def train_avalanche(args, strategy, benchmark):
     # Train and evaluate
-    for experience in benchmark.train_stream:
+    results = []
+    for exp_id, experience in enumerate(benchmark.train_stream):
         print(f"Start training on experience {experience.current_experience}")
         strategy.train(experience)
+        results.append(strategy.eval(benchmark.test_stream[:exp_id + 1]))
     training_statistics = strategy.evaluator.get_all_metrics()
     training_steps_per_batch, per_batch_losses = training_statistics["Loss_MB/train_phase/train_stream/Task000"]
     training_steps_per_epoch, per_epoch_losses = training_statistics["Loss_Epoch/train_phase/train_stream/Task000"]
@@ -118,6 +122,7 @@ def run_avalanche(args, strategy_name, hyperparamters, model, optimizer, criteri
         MinibatchLoss(),
         EpochLoss(),
         StreamAccuracy(),
+        StreamBWT(),
         loggers=[InteractiveLogger()]
     )
     wandb_acc_logger = WandBAccuracyLogger(holdout_datasets, args.batch_size, args.holdout_acc_freq)
@@ -128,13 +133,15 @@ def run_avalanche(args, strategy_name, hyperparamters, model, optimizer, criteri
         optimizer=optimizer,
         criterion=criterion,
         **hyperparamters,
-        evaluator=eval_plugin
+        evaluator=eval_plugin,
+        device=DEVICE
         )
     else:
         strategies = {
             "ewc": EWC,
             "agem": AGEM,
             "gpm" : GPM,
+            "naive": Naive
         }
         strategy = strategies[strategy_name](
             model=model,
@@ -142,7 +149,8 @@ def run_avalanche(args, strategy_name, hyperparamters, model, optimizer, criteri
             criterion=criterion,
             **hyperparamters,
             evaluator=eval_plugin, 
-            plugins = [wandb_acc_logger]
+            plugins = [wandb_acc_logger],
+            device=DEVICE
         )
     if strategy_name == "gpm":
 
@@ -162,8 +170,10 @@ def run_avalanche(args, strategy_name, hyperparamters, model, optimizer, criteri
 
     metrics = eval_plugin.get_all_metrics()
     
-    print(f'Average accuracy: {metrics["Top1_Acc_Stream/eval_phase/test_stream/Task000"][1][0] * 100.}')
-    wandb.log({'ACC' : metrics["Top1_Acc_Stream/eval_phase/test_stream/Task000"][1][0] * 100.})
+    print(f'Average accuracy: {metrics["Top1_Acc_Stream/eval_phase/test_stream/Task000"][1]}')
+    wandb.log({'ACC' : metrics["Top1_Acc_Stream/eval_phase/test_stream/Task000"][1][-1] * 100.})
+    print(f'BWT : {metrics["StreamBWT/eval_phase/test_stream"][1]}')
+    wandb.log({'BWT' : metrics["StreamBWT/eval_phase/test_stream"][1][-1]})
 
     return result
 
@@ -219,14 +229,17 @@ def get_optimizer(args, model):
     lr = args.lr
     batch_size = args.batch_size
 
-    if args.algo in ["SGD", "ewc", "agem", "gpm", "ogd"]:
+    if args.algo in ["SGD"] + baselines:
         optimizer = optim.SGD(model.parameters(), lr=lr)
     elif args.algo == "Bulk-SGD":
         optimizer = BulkSGD(model.parameters(), lr=lr, batch_size=batch_size, device=DEVICE)
     elif args.algo == "Top-SGD":
         optimizer = TopSGD(model.parameters(), lr=lr, batch_size=batch_size, device=DEVICE)
     elif args.algo == "prev_Bulk-SGD":
-        optimizer = CLBulkSGD(model.parameters(), lr=lr, batch_size=batch_size, device=DEVICE, mode=args.mode, n_evecs=args.n_evecs)
+        optimizer = CLBulkSGD(model.parameters(), lr=lr, batch_size=batch_size, device=DEVICE, 
+                              mode=args.mode, n_evecs=args.n_evecs,
+                              penalize_distance=args.penalize_distance, 
+                              penalty_lambda=args.penalty_lambda)
     else:
         raise NotImplementedError()
     return optimizer
@@ -240,7 +253,8 @@ def get_partial_dataloader(dataset, subset_size, batch_size):
     else:
         partial_dataset = dataset
     return DataLoader(dataset=partial_dataset, batch_size=batch_size,
-                                    shuffle=True, pin_memory=True)
+                                    shuffle=True, pin_memory=True, num_workers=2
+                                    )
 
 def get_holdout_dataset(test_dataset, subset_size):
     subset_indices = np.random.choice(len(test_dataset), subset_size, replace = False)
@@ -255,10 +269,6 @@ def train(train_loader, model, criterion, optimizer, lr, num_epochs: int, algo: 
     if args is not None:
         holdout_acc_freq = args.holdout_acc_freq
     
-    save_evecs = False
-    if args is not None and args.save_evecs:
-        save_evecs = True
-
     losses = []
     per_epoch_losses = []
     training_steps_per_batch = []
@@ -270,7 +280,7 @@ def train(train_loader, model, criterion, optimizer, lr, num_epochs: int, algo: 
         training_steps_per_epoch.append(cur_training_steps)
         with time_block("Training epoch"):
             for batch in tqdm(train_loader, "training loop..."):
-                images, labels, *rest = batch
+                images, labels, *_ = batch
                 images = images.to(DEVICE)
                 labels = labels.to(DEVICE)
 
@@ -283,7 +293,11 @@ def train(train_loader, model, criterion, optimizer, lr, num_epochs: int, algo: 
 
                 # Forward pass
                 outputs = model(images).to(DEVICE)
+
                 loss = criterion(outputs, labels)
+                if hasattr(optimizer, 'penalize_distance') and optimizer.penalize_distance:
+                    loss += optimizer.penalty(model)
+                    
                 loss_sum += loss.item()
                 batches += 1
                 losses.append(loss.item())
@@ -317,30 +331,12 @@ def train(train_loader, model, criterion, optimizer, lr, num_epochs: int, algo: 
                     SHARPNESS_TIMER += 1
 
                 # Backwards pass and optimization
-                # TODO: get rid of the if clause
-                if algo == 'SGD':
-                    loss.backward()
-                    optimizer.step()
-                    optimizer.zero_grad()
-                elif algo == 'Bulk-SGD':
-                    loss.backward()
+                loss.backward()
+                if algo in {'Bulk-SGD', 'Top-SGD'}:
                     dataset = TensorDataset(images, labels)
                     optimizer.calculate_evecs(model, criterion, dataset)
-                    optimizer.step()
-                    optimizer.zero_grad()
-                elif algo == 'Top-SGD':
-                    loss.backward()
-                    dataset = TensorDataset(images, labels)
-                    optimizer.calculate_evecs(model, criterion, dataset)
-                    optimizer.step()
-                    optimizer.zero_grad()
-                elif algo == 'prev_Bulk-SGD':
-                    loss.backward()
-                    dataset = TensorDataset(images, labels)
-                    optimizer.step()
-                    optimizer.zero_grad()
-                else:
-                    raise NotImplementedError()
+                optimizer.step()
+                optimizer.zero_grad()
                 
                 if args.save_evecs and hasattr(optimizer, 'evecs') and optimizer.evecs is not None :
                     if TOP_EVEC_TIMER % TOP_EVEC_RECORD_FREQ == 0:
@@ -369,7 +365,7 @@ def eval(test_loader, model, verbose = True):
         correct = 0
         total = 0
         for batch in test_loader:
-            images, labels, *rest = batch
+            images, labels, *_ = batch
 
             images = images.to(DEVICE) 
             labels = labels.to(DEVICE)
@@ -394,7 +390,7 @@ def projected_training(args):
         output_size = 10
         num_classes = 10
         transform = transforms.Compose([transforms.ToTensor(),]) 
-                                        #transforms.Normalize((0.,), (1.,))])  # is this normalization good?
+                                        # transforms.Normalize((0.,), (1.,))])  # is this normalization good?
         train_dataset = datasets.MNIST(root='./data', 
                                             train=True, 
                                             transform=transform, 
@@ -416,7 +412,7 @@ def projected_training(args):
         output_size = 10
         num_classes = 10
         transform = transforms.Compose([transforms.ToTensor(),]) 
-                                        #transforms.Normalize((0.,), (1.,))])  # is this normalization good?
+                                        # transforms.Normalize((0.,), (1.,))])  # is this normalization good?
         train_dataset = datasets.MNIST(root='./data', 
                                             train=True, 
                                             transform=transform, 
@@ -445,7 +441,7 @@ def projected_training(args):
         raise NotImplementedError()
     optimizer = get_optimizer(args, model)
 
-    summary(model, input_size=(28, 28),device=DEVICE)
+    summary(model, input_size=(28, 28), device=DEVICE)
 
     # Warm-up loop
     print('Started warm-up training...')
@@ -462,6 +458,7 @@ def projected_training(args):
     warm_up_accuracy = eval(test_loader, model)   
     if hasattr(optimizer, '_warm_up'):
         optimizer._warm_up = False
+    
     # Training loop 
     print('Started training...')
     train_losses = train(train_loader, model, 
@@ -502,6 +499,8 @@ def cl_task(args):
     batch_size = args.batch_size
     lr = args.lr
     train_subset_size = None
+    if train_subset_size is not None:
+        print('\n\n\nOOOOOH MY GOOOOOD YOU ARE NOT USING FULL TRAIN SUBSET SIZE !!!!!!!!!!!!!!!!!!!!!!!!!\n\n\n\n')
     holdout_size = 500
 
     # Load the dataset
@@ -614,6 +613,11 @@ def cl_task(args):
                 "train_epochs": args.epochs,
                 "eval_mb_size": batch_size,
                  "plugins" : [OGDPlugin(10)]
+            }, 
+            "naive" : {
+                "train_mb_size" : batch_size, 
+                "train_epochs" : args.epochs, 
+                "eval_mb_size" : batch_size, 
             }
         }
 
@@ -642,6 +646,7 @@ def cl_task(args):
     prev_evecs = None
 
     cur_holdouts = []
+    initial_exp_accuracy = [0.0] * len(train_stream)
     for exp_id, experience in enumerate(train_stream):
         cur_holdouts.append(holdout_datasets[exp_id])
 
@@ -657,16 +662,37 @@ def cl_task(args):
         all_warm_up_training_steps.append(warm_up_training_steps)
 
         if hasattr(optimizer, 'append_evecs'):
-            subset_indices = np.random.choice(len(experience.dataset), args.hessian_subset_size, replace=False)
-            partial_dataset = Subset(experience.dataset, subset_indices)
-    
-            optimizer.append_evecs(model, criterion, partial_dataset)
+            for i in range(args.n_bulk_batches):
+                subset_indices = np.random.choice(len(experience.dataset), args.hessian_subset_size, replace=False) 
+                partial_dataset = Subset(experience.dataset, subset_indices)
+
+                optimizer.append_evecs(model, criterion, partial_dataset)
+        
+        if hasattr(optimizer, 'penalize_distance') and optimizer.penalize_distance:
+            optimizer.update_weights(model)
+        
+        test_loader = DataLoader(dataset=test_stream[exp_id].dataset, batch_size=args.batch_size, 
+                                 shuffle=True, pin_memory=True)
+        initial_exp_accuracy[exp_id] = eval(test_loader, model, False)
+        print(f'Initial accuracy of exp {exp_id}: {initial_exp_accuracy[exp_id]}')
 
     print('Computing accuracy on the test set')
     final_accuracy = custom_cl_strategy.eval(test_stream)
+    metrics = eval_plugin.get_all_metrics()
 
-    print(f'Average accuracy: {final_accuracy["Top1_Acc_Stream/eval_phase/test_stream/Task000"] * 100.}')
-    wandb.log({'ACC' : final_accuracy["Top1_Acc_Stream/eval_phase/test_stream/Task000"] * 100.})
+    # Final accuracy 
+    final_exp_accuracy = [0.0] * len(initial_exp_accuracy)
+    for exp_id in range(len(final_exp_accuracy)):
+        test_loader = DataLoader(dataset=test_stream[exp_id].dataset, batch_size=args.batch_size, 
+                                 shuffle=True, pin_memory=True)
+        final_exp_accuracy[exp_id] = eval(test_loader, model, False)
+        print(f'Final accuracy of exp {exp_id} : {final_exp_accuracy[exp_id]}')
+    print(f'Average final accuracy : {np.mean(final_exp_accuracy)}')
+    print(f'BWT : {(np.mean(final_exp_accuracy) - np.mean(initial_exp_accuracy)) * 0.01}')
+    wandb.log({'BWT' : (np.mean(final_exp_accuracy) - np.mean(initial_exp_accuracy)) * 0.01})
+
+    print(f'Average accuracy: {metrics["Top1_Acc_Stream/eval_phase/test_stream/Task000"][1][-1] * 100.}')
+    wandb.log({'ACC' : metrics["Top1_Acc_Stream/eval_phase/test_stream/Task000"][1][-1] * 100.})
 
     save_results_cl(args, all_warm_up_losses, all_train_losses, final_accuracy, top_evecs=TOP_EVECS)
     print(final_accuracy)

@@ -1,3 +1,4 @@
+from numpy import square
 import torch
 from utilities import get_hessian_eigenvalues, overlap_top_tr
 from torch.nn.utils import parameters_to_vector, vector_to_parameters
@@ -67,7 +68,8 @@ class TopSGD(torch.optim.SGD):
 class CLBulkSGD(torch.optim.SGD): 
 
     def __init__(self, params, batch_size, device,
-                 lr: Union[float, torch.Tensor] = 1e-3, mode = 'average', n_evecs = 10):
+                 lr: Union[float, torch.Tensor] = 1e-3, mode = 'average', n_evecs = 10,
+                 penalize_distance = False, penalty_lambda = 0.01):
         super().__init__(params, lr)
         self.batch_size = batch_size
         self.device = device
@@ -79,6 +81,10 @@ class CLBulkSGD(torch.optim.SGD):
         if mode not in ['average', 'gs', 'only_first', 'only_last']:
             raise NotImplementedError()
         self.n_evecs = n_evecs
+        
+        self.weights = []
+        self.lambda_ = penalty_lambda
+        self.penalize_distance = penalize_distance
 
     @torch.no_grad()
     def step(self):
@@ -105,11 +111,13 @@ class CLBulkSGD(torch.optim.SGD):
                 self.top_evecs = [evecs]
 
     def gram_schmidt(self, evecs):
-        for evec in evecs:
-            for top_space in self.top_evecs:
-                    top_space_projection = torch.concatenate(self.top_evecs, dim = 0)
-                    projection_mag = (top_space_projection @ evec.unsqueeze(1)).squeeze(1) 
-                    evec -= (projection_mag.unsqueeze(0) @ top_space_projection).squeeze(0)
+        with torch.no_grad():
+            for evec in evecs:
+                for top_space in self.top_evecs:
+                        top_space_projection = torch.concatenate(self.top_evecs, dim = 0)
+                        projection_mag = (top_space_projection @ evec.unsqueeze(1)).squeeze(1) 
+                        evec -= (projection_mag.unsqueeze(0) @ top_space_projection).squeeze(0)
+                evec /= torch.sqrt(torch.dot(evec, evec))
         return evecs
 
     def append_evecs(self, model, criterion, dataset):
@@ -134,3 +142,15 @@ class CLBulkSGD(torch.optim.SGD):
                     self.top_evecs = [evecs] if len(self.top_evecs) == 0 else self.top_evecs
                 elif self.mode == 'only_last':
                     self.top_evecs = [evecs]
+    
+    def penalty(self, model):
+        return self.lambda_ * sum([self.dist_(model, state_dict) for state_dict in self.weights])
+
+    def update_weights(self, model):
+        detached_vec_parameters = parameters_to_vector(model.parameters()).detach().clone()
+        detached_vec_parameters.requires_grad_(False)
+        self.weights = [detached_vec_parameters]
+
+    def dist_(self, model1, model2_vec_parameters):
+        model1_vec_parameters = parameters_to_vector(model1.parameters())
+        return torch.sum((model1_vec_parameters - model2_vec_parameters) ** 2)
