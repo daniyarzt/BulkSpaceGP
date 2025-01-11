@@ -26,6 +26,9 @@ from avalanche.logging import InteractiveLogger
 from avalanche.training.plugins import EvaluationPlugin
 
 from avalanche.training.supervised import EWC, AGEM, Naive
+from gpm_baseline import GPM
+from ogd_baseline import OGDPlugin
+from collections import OrderedDict
 
 DEVICE = 'cpu'
 
@@ -55,6 +58,7 @@ def arg_parser():
     parser.add_argument('--model', choices = ['MLP'], default='MLP')
     parser.add_argument('--hidden_sizes', type=int, nargs='+', required=False)
     parser.add_argument('--activation', choices = ['relu','tanh'], default='relu')
+    parser.add_argument('--nobias', action=BooleanOptionalAction, default=False)
 
     # projected_training args
     parser.add_argument('--warm_up_epochs', type=int, default=0, required=False)
@@ -90,20 +94,30 @@ def train_avalanche(args, strategy, benchmark):
     training_steps_per_batch, per_batch_losses = training_statistics["Loss_MB/train_phase/train_stream/Task000"]
     training_steps_per_epoch, per_epoch_losses = training_statistics["Loss_Epoch/train_phase/train_stream/Task000"]
 
+    print(training_statistics.keys())
+
     epoch_size = len(training_steps_per_batch) // (args.n_experiences * args.epochs)
 
-    all_train_losses = [(per_batch_losses, per_epoch_losses, [x*args.batch_size for x in training_steps_per_batch], [x*args.batch_size*epoch_size for x in training_steps_per_epoch])]
+    cat_all_train_losses = (per_batch_losses, per_epoch_losses, [x*args.batch_size for x in training_steps_per_batch], [x*args.batch_size*epoch_size for x in training_steps_per_epoch])
+    all_train_losses = []
+    batch_offset = 0
+    epoch_offset = 0
+    for i in range(args.n_experiences):
+        n_epoch_start = i*args.epochs
+        n_epoch_end = (i+1)*args.epochs
+        n_batch_start = i*epoch_size*args.epochs
+        n_batch_end = (i+1)*epoch_size*args.epochs
+        l0, l1, l2, l3 = cat_all_train_losses[0][n_batch_start:n_batch_end], cat_all_train_losses[1][n_epoch_start:n_epoch_end], cat_all_train_losses[2][n_batch_start:n_batch_end], cat_all_train_losses[3][n_epoch_start:n_epoch_end]
+        l2 = [x-batch_offset for x in l2]
+        l3 = [x-epoch_offset for x in l3]
+        batch_offset = l2[-1]
+        epoch_offset = l3[-1]
+        all_train_losses.append((l0, l1, l2, l3))
     final_accuracy = strategy.eval(benchmark.test_stream)
     return final_accuracy, all_train_losses
 
 
 def run_avalanche(args, strategy_name, hyperparamters, model, optimizer, criterion, benchmark, holdout_datasets):
-    strategies = {
-        "ewc": EWC,
-        "agem": AGEM,
-        "naive": Naive
-    }
-    
     eval_plugin = EvaluationPlugin(
         MinibatchLoss(),
         EpochLoss(),
@@ -113,15 +127,44 @@ def run_avalanche(args, strategy_name, hyperparamters, model, optimizer, criteri
     )
     wandb_acc_logger = WandBAccuracyLogger(holdout_datasets, args.batch_size, args.holdout_acc_freq)
 
-    strategy = strategies[strategy_name](
+    if strategy_name == "ogd":
+        strategy = SupervisedTemplate(
         model=model,
         optimizer=optimizer,
         criterion=criterion,
         **hyperparamters,
-        evaluator=eval_plugin, 
-        plugins = [wandb_acc_logger], 
-        device=DEVICE, 
-    )
+        evaluator=eval_plugin,
+        device=DEVICE
+        )
+    else:
+        strategies = {
+            "ewc": EWC,
+            "agem": AGEM,
+            "gpm" : GPM,
+            "naive": Naive
+        }
+        strategy = strategies[strategy_name](
+            model=model,
+            optimizer=optimizer,
+            criterion=criterion,
+            **hyperparamters,
+            evaluator=eval_plugin, 
+            plugins = [wandb_acc_logger],
+            device=DEVICE
+        )
+    if strategy_name == "gpm":
+
+        all_train_losses = []
+
+        for exp_id, experience in enumerate(benchmark.train_stream):
+            print(f"Start of experience {exp_id + 1}: {experience}")
+            train_losses = strategy.train(experience)
+            all_train_losses.append(train_losses)
+            print("Training completed.")
+
+        # Eval on test stream
+        final_accuracy = strategy.eval(benchmark.test_stream)
+        return final_accuracy, all_train_losses
     
     result =  train_avalanche(args, strategy, benchmark)
 
@@ -142,13 +185,16 @@ def seed_everything(seed=42):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-def get_model(input_size : int, output_size : int, args) -> nn.Module:
+def get_model(input_size : int, output_size : int, args, device, bias=True) -> nn.Module:
     # Model definitions could be moved to a separate file...  
     if args.model == 'MLP':
         # Define the MLP model 
         class MLP(nn.Module):
-            def __init__(self, input_size, output_size, hidden_sizes):
+            def __init__(self, input_size, output_size, hidden_sizes, bias):
                 super(MLP, self).__init__()
+                # Needed for GPM 
+                self.act=OrderedDict()
+                self.n_lin = len(hidden_sizes) + 1
                 
                 layers = []
                 in_size = input_size 
@@ -159,17 +205,23 @@ def get_model(input_size : int, output_size : int, args) -> nn.Module:
                             layers.append(nn.ReLU())
                         elif args.activation == 'tanh':
                             layers.append(nn.Tanh())
-                    layers.append(nn.Linear(in_size, hidden_size))
+                    layers.append(nn.Linear(in_size, hidden_size, bias=bias))
                     in_size = hidden_size
                 
-                layers.append(nn.Linear(in_size, output_size).to(DEVICE))
+                layers.append(nn.Linear(in_size, output_size, bias=bias).to(device))
                 self.model = nn.Sequential(*layers)
                 
             def forward(self, x):
                 x = x.view(-1, 28 * 28)
-                return self.model(x)
+                i = 1
+                for layer in self.model:
+                    if isinstance(layer, nn.Linear):
+                        self.act[f'Lin{i}'] = x
+                        i += 1
+                    x = layer(x)
+                return x
             
-        return MLP(input_size, output_size, args.hidden_sizes)
+        return MLP(input_size, output_size, args.hidden_sizes, bias)
     else:
         raise NotImplementedError()
     
@@ -379,7 +431,7 @@ def projected_training(args):
     test_loader = DataLoader(dataset=test_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
 
     # Initialize the model, loss_function, and optimizer
-    model = get_model(input_size, output_size, args).to(DEVICE)
+    model = get_model(input_size, output_size, args, DEVICE).to(DEVICE)
     wandb.watch(model, log_graph=True)
     if args.loss == 'cross_entropy_loss':
         criterion = nn.CrossEntropyLoss()   
@@ -530,7 +582,10 @@ def cl_task(args):
             return warm_up_losses, train_losses, warm_up_training_steps
 
     # Initialize the model, loss_function, and optimizer, strategy
-    model = get_model(input_size, output_size, args).to(DEVICE)
+    if args.algo == "gpm" and args.nobias == False:
+        raise Exception("GPM does not support bias (use --nobias)")
+
+    model = get_model(input_size, output_size, args, DEVICE, not args.nobias).to(DEVICE)
     criterion = nn.CrossEntropyLoss()
     optimizer = get_optimizer(args, model)
     if args.algo in baselines:
@@ -546,6 +601,18 @@ def cl_task(args):
                 "train_mb_size": batch_size,
                 "train_epochs": args.epochs,
                 "eval_mb_size": batch_size,
+            },
+            "gpm" : {
+                "train_mb_size": batch_size,
+                "train_epochs": args.epochs,
+                "eval_mb_size": batch_size,
+                "lr": args.lr,
+            },
+            "ogd" : {
+                "train_mb_size": batch_size,
+                "train_epochs": args.epochs,
+                "eval_mb_size": batch_size,
+                 "plugins" : [OGDPlugin(10)]
             }, 
             "naive" : {
                 "train_mb_size" : batch_size, 
