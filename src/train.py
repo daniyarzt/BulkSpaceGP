@@ -337,7 +337,7 @@ def projected_training(args):
         output_size = 10
         num_classes = 10
         transform = transforms.Compose([transforms.ToTensor(),]) 
-                                        #transforms.Normalize((0.,), (1.,))])  # is this normalization good?
+                                        # transforms.Normalize((0.,), (1.,))])  # is this normalization good?
         train_dataset = datasets.MNIST(root='./data', 
                                             train=True, 
                                             transform=transform, 
@@ -359,7 +359,7 @@ def projected_training(args):
         output_size = 10
         num_classes = 10
         transform = transforms.Compose([transforms.ToTensor(),]) 
-                                        #transforms.Normalize((0.,), (1.,))])  # is this normalization good?
+                                        # transforms.Normalize((0.,), (1.,))])  # is this normalization good?
         train_dataset = datasets.MNIST(root='./data', 
                                             train=True, 
                                             transform=transform, 
@@ -388,7 +388,7 @@ def projected_training(args):
         raise NotImplementedError()
     optimizer = get_optimizer(args, model)
 
-    summary(model, input_size=(28, 28),device=DEVICE)
+    summary(model, input_size=(28, 28), device=DEVICE)
 
     # Warm-up loop
     print('Started warm-up training...')
@@ -405,6 +405,7 @@ def projected_training(args):
     warm_up_accuracy = eval(test_loader, model)   
     if hasattr(optimizer, '_warm_up'):
         optimizer._warm_up = False
+    
     # Training loop 
     print('Started training...')
     train_losses = train(train_loader, model, 
