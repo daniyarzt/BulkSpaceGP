@@ -25,7 +25,7 @@ from avalanche.evaluation.metrics import MinibatchLoss, EpochLoss, TaskAwareLoss
 from avalanche.logging import InteractiveLogger
 from avalanche.training.plugins import EvaluationPlugin
 
-from avalanche.training.supervised import EWC, AGEM
+from avalanche.training.supervised import EWC, AGEM, Naive
 
 DEVICE = 'cpu'
 
@@ -34,7 +34,7 @@ TOP_EVEC_RECORD_FREQ = 1
 TOP_EVEC_TIMER = 0
 SHARPNESS_TIMER = 0
 SHARPNESS_FREQ = 25
-baselines = ["ewc", "agem", "ogd", "gpm"]
+baselines = ["ewc", "agem", "ogd", "gpm", "naive"]
 
 def arg_parser():
     parser = ArgumentParser(description='Train')
@@ -101,6 +101,7 @@ def run_avalanche(args, strategy_name, hyperparamters, model, optimizer, criteri
     strategies = {
         "ewc": EWC,
         "agem": AGEM,
+        "naive": Naive
     }
     
     eval_plugin = EvaluationPlugin(
@@ -118,14 +119,15 @@ def run_avalanche(args, strategy_name, hyperparamters, model, optimizer, criteri
         criterion=criterion,
         **hyperparamters,
         evaluator=eval_plugin, 
-        plugins = [wandb_acc_logger]
+        plugins = [wandb_acc_logger], 
+        device=DEVICE, 
     )
     
     result =  train_avalanche(args, strategy, benchmark)
 
     metrics = eval_plugin.get_all_metrics()
     
-    print(f'Average accuracy: {metrics["Top1_Acc_Stream/eval_phase/test_stream/Task000"][1] * 100.}')
+    print(f'Average accuracy: {metrics["Top1_Acc_Stream/eval_phase/test_stream/Task000"][1]}')
     wandb.log({'ACC' : metrics["Top1_Acc_Stream/eval_phase/test_stream/Task000"][1][-1] * 100.})
     print(f'BWT : {metrics["StreamBWT/eval_phase/test_stream"][1]}')
     wandb.log({'BWT' : metrics["StreamBWT/eval_phase/test_stream"][1][-1]})
@@ -175,7 +177,7 @@ def get_optimizer(args, model):
     lr = args.lr
     batch_size = args.batch_size
 
-    if args.algo in ["SGD", "ewc", "agem"]:
+    if args.algo in ["SGD"] + baselines:
         optimizer = optim.SGD(model.parameters(), lr=lr)
     elif args.algo == "Bulk-SGD":
         optimizer = BulkSGD(model.parameters(), lr=lr, batch_size=batch_size, device=DEVICE)
@@ -542,6 +544,11 @@ def cl_task(args):
                 "train_mb_size": batch_size,
                 "train_epochs": args.epochs,
                 "eval_mb_size": batch_size,
+            }, 
+            "naive" : {
+                "train_mb_size" : batch_size, 
+                "train_epochs" : args.epochs, 
+                "eval_mb_size" : batch_size, 
             }
         }
 
