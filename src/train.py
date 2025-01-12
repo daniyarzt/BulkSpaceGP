@@ -177,10 +177,27 @@ def run_avalanche(args, strategy_name, hyperparamters, model, optimizer, criteri
     if strategy_name == "gpm":
 
         all_train_losses = []
-
+        if args.save_evecs_sep:
+            if not os.path.exists(args.evec_history_dir):
+                os.makedirs(args.evec_history_dir)
+            for hes_experience in benchmark.train_stream:
+                subset_indices = np.random.choice(len(hes_experience.dataset), args.hessian_subset_size, replace=False)
+                partial_dataset = Subset(hes_experience.dataset, subset_indices)
+                _, evecs = get_hessian_eigenvalues(strategy.model, criterion, partial_dataset, neigs=args.n_evecs)
+                name = f"eivs-{hes_experience.current_experience}-before-training.pt"
+                evec_history_path = os.path.join(args.evec_history_dir, name) 
+                torch.save(evecs.T, evec_history_path)
         for exp_id, experience in enumerate(benchmark.train_stream):
             print(f"Start of experience {exp_id + 1}: {experience}")
             train_losses = strategy.train(experience)
+            if args.save_evecs_sep:
+                for hes_experience in benchmark.train_stream:
+                    subset_indices = np.random.choice(len(hes_experience.dataset), args.hessian_subset_size, replace=False)
+                    partial_dataset = Subset(hes_experience.dataset, subset_indices)
+                    _, evecs = get_hessian_eigenvalues(strategy.model, criterion, partial_dataset, neigs=args.n_evecs)
+                    name = f"./eivs-{hes_experience.current_experience}-after-training-{experience.current_experience}.pt"
+                    evec_history_path = os.path.join(args.evec_history_dir, name) 
+                    torch.save(evecs.T, evec_history_path)
             all_train_losses.append(train_losses)
             print("Training completed.")
 
