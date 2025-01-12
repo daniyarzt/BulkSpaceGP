@@ -186,6 +186,7 @@ def run_avalanche(args, strategy_name, hyperparamters, model, optimizer, criteri
         criterion=criterion,
         **hyperparamters,
         evaluator=eval_plugin,
+        plugins=[OGDPlugin(200), wandb_acc_logger],
         device=DEVICE
         )
     else:
@@ -699,7 +700,7 @@ def cl_task(args):
                 "train_mb_size": batch_size,
                 "train_epochs": args.epochs,
                 "eval_mb_size": batch_size,
-                 "plugins" : [OGDPlugin(200)]
+                #  "plugins" : [OGDPlugin(200)]
             }, 
             "naive" : {
                 "train_mb_size" : batch_size, 
