@@ -19,7 +19,7 @@ class BulkSGD(torch.optim.SGD):
     def step(self):
         if self._warm_up:
             super().step()
-            return; 
+            return
         for group in self.param_groups:
             vec_params = parameters_to_vector([p for p in group["params"] if p.grad is not None]).to(self.device)
             vec_grad = parameters_to_vector([p.grad for p in group["params"] if p.grad is not None]).to(self.device)
@@ -49,7 +49,7 @@ class TopSGD(torch.optim.SGD):
     def step(self):
         if self._warm_up:
             super().step()
-            return; 
+            return
         for group in self.param_groups:
             vec_params = parameters_to_vector([p for p in group["params"] if p.grad is not None]).to(self.device)
             vec_grad = parameters_to_vector([p.grad for p in group["params"] if p.grad is not None]).to(self.device)
