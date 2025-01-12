@@ -78,6 +78,8 @@ def arg_parser():
 
     # Additional logs and metrics 
     parser.add_argument('--save_evecs', action=BooleanOptionalAction, default=False)
+    parser.add_argument('--save_evecs_sep', action=BooleanOptionalAction, default=False)
+    parser.add_argument('--evec_history_dir', type=str, default=os.path.join("..", "storage", "evec_history"))
     parser.add_argument('--plot_sharpness', action=BooleanOptionalAction, default=False)
     parser.add_argument('--log_overlaps', action=BooleanOptionalAction, default=False)
     parser.add_argument('--holdout_acc_freq', type=int, default=1)
@@ -88,9 +90,27 @@ def arg_parser():
 def train_avalanche(args, strategy, benchmark):
     # Train and evaluate
     results = []
+    if args.save_evecs_sep:
+            if not os.path.exists(args.evec_history_dir):
+                os.makedirs(args.evec_history_dir)
+            for hes_experience in benchmark.train_stream:
+                subset_indices = np.random.choice(len(hes_experience.dataset), args.hessian_subset_size, replace=False)
+                partial_dataset = Subset(hes_experience.dataset, subset_indices)
+                _, evecs = get_hessian_eigenvalues(strategy.model, strategy.criterion, partial_dataset, neigs=args.n_evecs)
+                name = f"eivs-{hes_experience.current_experience}-before-training.pt"
+                evec_history_path = os.path.join(args.evec_history_dir, name) 
+                torch.save(evecs.T, evec_history_path)
     for exp_id, experience in enumerate(benchmark.train_stream):
         print(f"Start training on experience {experience.current_experience}")
         strategy.train(experience)
+        if args.save_evecs_sep:
+            for hes_experience in benchmark.train_stream:
+                subset_indices = np.random.choice(len(hes_experience.dataset), args.hessian_subset_size, replace=False)
+                partial_dataset = Subset(hes_experience.dataset, subset_indices)
+                _, evecs = get_hessian_eigenvalues(strategy.model, strategy.criterion, partial_dataset, neigs=args.n_evecs)
+                name = f"./eivs-{hes_experience.current_experience}-after-training-{experience.current_experience}.pt"
+                evec_history_path = os.path.join(args.evec_history_dir, name) 
+                torch.save(evecs.T, evec_history_path)
         results.append(strategy.eval(benchmark.test_stream[:exp_id + 1]))
     training_statistics = strategy.evaluator.get_all_metrics()
     training_steps_per_batch, per_batch_losses = training_statistics["Loss_MB/train_phase/train_stream/Task000"]
@@ -659,6 +679,16 @@ def cl_task(args):
 
     cur_holdouts = []
     initial_exp_accuracy = [0.0] * len(train_stream)
+    if args.save_evecs_sep:
+            if not os.path.exists(args.evec_history_dir):
+                os.makedirs(args.evec_history_dir)
+            for hes_experience in train_stream:
+                subset_indices = np.random.choice(len(hes_experience.dataset), args.hessian_subset_size, replace=False)
+                partial_dataset = Subset(hes_experience.dataset, subset_indices)
+                _, evecs = get_hessian_eigenvalues(model, criterion, partial_dataset, neigs=args.n_evecs)
+                name = f"eivs-{hes_experience.current_experience}-before-training.pt"
+                evec_history_path = os.path.join(args.evec_history_dir, name) 
+                torch.save(evecs.T, evec_history_path)
     for exp_id, experience in enumerate(train_stream):
         cur_holdouts.append(holdout_datasets[exp_id])
 
@@ -668,7 +698,14 @@ def cl_task(args):
         warm_up_losses, train_losses, warm_up_training_steps = custom_cl_strategy.train(
             experience, exp_id, prev_evals, prev_evecs, cur_holdouts)
         print("Training completed.")
-
+        if args.save_evecs_sep:
+            for hes_experience in train_stream:
+                subset_indices = np.random.choice(len(hes_experience.dataset), args.hessian_subset_size, replace=False)
+                partial_dataset = Subset(hes_experience.dataset, subset_indices)
+                _, evecs = get_hessian_eigenvalues(model, criterion, partial_dataset, neigs=args.n_evecs)
+                name = f"./eivs-{hes_experience.current_experience}-after-training-{experience.current_experience}.pt"
+                evec_history_path = os.path.join(args.evec_history_dir, name) 
+                torch.save(evecs.T, evec_history_path)
         all_warm_up_losses.append(warm_up_losses)
         all_train_losses.append(train_losses)
         all_warm_up_training_steps.append(warm_up_training_steps)
