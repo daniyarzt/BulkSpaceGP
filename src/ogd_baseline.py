@@ -26,15 +26,12 @@ class OGDPlugin(SupervisedPlugin):
     def _proj(self, v, g):
 
         # Calculate the projection factor
-        v_flatten = torch.cat([param.view(-1) for param in v])
-        g_flatten = torch.cat([param.view(-1) for param in g])
-        scale = (torch.dot(v_flatten, g_flatten) / torch.dot(v_flatten, v_flatten))
+        v_flatten = torch.nn.utils.parameters_to_vector(v)
+        g_flatten = torch.nn.utils.parameters_to_vector(g)
+        scale = torch.dot(v_flatten, g_flatten) / torch.dot(v_flatten, v_flatten)
         
         # Calculate the projection (while keeping the shape)
-        ret = []
-        for param in v:
-            ret.append(scale * param)
-        return ret
+        return [scale * param for param in v]
 
     def _store_gradient(self, grad):
         self.S.append(grad)
@@ -50,8 +47,8 @@ class OGDPlugin(SupervisedPlugin):
         # Projections
         projs = [self._proj(v, g) for v in self.S]
 
-        # g* = g − ∑v∈S proj_v(g)
         #print("Projecting gradients...")
+        # g* = g − ∑v∈S proj_v(g)
         for param_grads in projs:
             for idx, param_grad in enumerate(param_grads):
                 g[idx] -= param_grad 
