@@ -87,7 +87,7 @@ def arg_parser():
     args = parser.parse_args()
     return args
 
-def train_avalanche(args, strategy, benchmark):
+def train_avalanche(args, strategy, benchmark, criterion):
     # Train and evaluate
     results = []
     if args.save_evecs_sep:
@@ -96,7 +96,7 @@ def train_avalanche(args, strategy, benchmark):
             for hes_experience in benchmark.train_stream:
                 subset_indices = np.random.choice(len(hes_experience.dataset), args.hessian_subset_size, replace=False)
                 partial_dataset = Subset(hes_experience.dataset, subset_indices)
-                _, evecs = get_hessian_eigenvalues(strategy.model, strategy.criterion, partial_dataset, neigs=args.n_evecs)
+                _, evecs = get_hessian_eigenvalues(strategy.model, criterion, partial_dataset, neigs=args.n_evecs)
                 name = f"eivs-{hes_experience.current_experience}-before-training.pt"
                 evec_history_path = os.path.join(args.evec_history_dir, name) 
                 torch.save(evecs.T, evec_history_path)
@@ -107,7 +107,7 @@ def train_avalanche(args, strategy, benchmark):
             for hes_experience in benchmark.train_stream:
                 subset_indices = np.random.choice(len(hes_experience.dataset), args.hessian_subset_size, replace=False)
                 partial_dataset = Subset(hes_experience.dataset, subset_indices)
-                _, evecs = get_hessian_eigenvalues(strategy.model, strategy.criterion, partial_dataset, neigs=args.n_evecs)
+                _, evecs = get_hessian_eigenvalues(strategy.model, criterion, partial_dataset, neigs=args.n_evecs)
                 name = f"./eivs-{hes_experience.current_experience}-after-training-{experience.current_experience}.pt"
                 evec_history_path = os.path.join(args.evec_history_dir, name) 
                 torch.save(evecs.T, evec_history_path)
@@ -188,7 +188,7 @@ def run_avalanche(args, strategy_name, hyperparamters, model, optimizer, criteri
         final_accuracy = strategy.eval(benchmark.test_stream)
         return final_accuracy, all_train_losses
     
-    result =  train_avalanche(args, strategy, benchmark)
+    result =  train_avalanche(args, strategy, benchmark, criterion)
 
     metrics = eval_plugin.get_all_metrics()
     
