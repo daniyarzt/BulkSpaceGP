@@ -85,6 +85,7 @@ def arg_parser():
     parser.add_argument('--loss', type=str, default='cross_entropy_loss')
 
     parser.add_argument('--benchmark', choices=['splitmnist', 'rotatedmnist', 'permutedmnist'], default='permutedmnist')
+    parser.add_argument('--rotation', type=int, choices=[0, 10, 20, 30, 40], default=0)
 
     # Model parameters 
     parser.add_argument('--model', choices = ['MLP'], default='MLP')
@@ -587,16 +588,17 @@ def cl_task(args):
         benchmark = PermutedMNIST(n_experiences=args.n_experiences)
     elif args.benchmark == 'splitmnist':
         print("Using benchmark: SplitMNIST")
-        benchmark = SplitMNIST(n_experiences=args.n_experiences)
+        benchmark = SplitMNIST(n_experiences=args.n_experiences, class_ids_from_zero_in_each_exp = True)
     elif args.benchmark == 'rotatedmnist':
         print("Using benchmark: RotatedMNIST")
-        benchmark = RotatedMNIST(n_experiences=args.n_experiences)
+        assert(args.n_experiences == 2)
+        benchmark = RotatedMNIST(n_experiences=args.n_experiences, rotations_list=[0, args.rotation])
     else:
         raise NotImplementedError()
     train_stream = benchmark.train_stream
     test_stream = benchmark.test_stream
     input_size = 28 * 28
-    output_size = 10
+    output_size = 10 if args.benchmark != 'splitmnist' else 10 // args.n_experiences 
 
     holdout_datasets = []
     for experience in train_stream:
