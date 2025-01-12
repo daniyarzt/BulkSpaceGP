@@ -146,7 +146,7 @@ class GPM(SupervisedTemplate):
         epoch_loss = sum_losses / num_minibatches
         return epoch_loss
 
-    def train_epoch(self, model, device, x, y, optimizer,criterion):
+    def train_epoch(self, model, device, x, y, optimizer,criterion, holdout_logger):
         train_mb_size = self.train_mb_size
         model.train()
         r=np.arange(x.size(0))
@@ -170,9 +170,11 @@ class GPM(SupervisedTemplate):
             optimizer.step()
             n += len(b)
             training_steps.append(n)
+            if  holdout_logger is not None:
+                 holdout_logger()
         return losses, training_steps
 
-    def train_epoch_projected(self, model,device,x,y,optimizer,criterion,feature_mat):
+    def train_epoch_projected(self, model,device,x,y,optimizer,criterion,feature_mat, holdout_logger):
         train_mb_size = self.train_mb_size
         model.train()
         r=np.arange(x.size(0))
@@ -204,9 +206,11 @@ class GPM(SupervisedTemplate):
             optimizer.step()
             n += len(b)
             training_steps.append(n)
+            if holdout_logger is not None:
+                 holdout_logger()
         return losses, training_steps
         
-    def train(self, experience):
+    def train(self, experience, holdout_logger):
         model = self.model
         criterion = self._criterion
         device = self.device
@@ -242,7 +246,7 @@ class GPM(SupervisedTemplate):
             self.feature_list =[]
             for epoch in range(1, self.train_epochs+1):
                 # Train
-                losses, training_steps = self.train_epoch(model, device, xtrain, ytrain, optimizer, criterion)
+                losses, training_steps = self.train_epoch(model, device, xtrain, ytrain, optimizer, criterion, holdout_logger)
                 training_steps_per_batch += [x + self.curr_steps for x in training_steps]
                 total_losses += losses
                 self.curr_steps = training_steps_per_batch[-1]
@@ -264,7 +268,7 @@ class GPM(SupervisedTemplate):
             print ('-'*40)
             for epoch in range(1,self.train_epochs+1):
                 # Train 
-                losses, training_steps = self.train_epoch_projected(model,device,xtrain, ytrain,optimizer,criterion,feature_mat)
+                losses, training_steps = self.train_epoch_projected(model,device,xtrain, ytrain,optimizer,criterion,feature_mat, holdout_logger)
                 training_steps_per_batch += [x + self.curr_steps for x in training_steps]
                 total_losses += losses
                 self.curr_steps = training_steps_per_batch[-1]

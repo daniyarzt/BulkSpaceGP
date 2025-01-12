@@ -39,6 +39,36 @@ SHARPNESS_TIMER = 0
 SHARPNESS_FREQ = 25
 baselines = ["ewc", "agem", "ogd", "gpm", "naive"]
 
+class PeriodicCaller():
+    ''' Triggers a function only every x calls '''
+    def __init__(self, fn, period):
+        self.period = period
+        self.timer = 0
+        self.fn = fn
+
+    def __call__(self):
+        if self.timer % self.period == 0:
+            self.fn()
+            self.reset()
+        self.timer += 1
+
+    def reset(self):
+        self.timer = 0
+
+class HoldoutLogger():
+    def __init__(self, batch_size, model, holdouts):
+        self.batch_size = batch_size
+        self.model = model
+        self.holdouts = holdouts
+
+    def __call__(self):
+        for i, holdout_dataset in enumerate(self.holdouts):
+                holdout_loader = DataLoader(dataset=holdout_dataset, 
+                                            batch_size=self.batch_size,
+                                            shuffle=True, pin_memory=True)
+                holdout_accuracy = eval(holdout_loader, self.model, verbose = False)
+                wandb.log({f"exp_{i}_accuracy" : holdout_accuracy})
+
 def arg_parser():
     parser = ArgumentParser(description='Train')
 
@@ -176,7 +206,6 @@ def run_avalanche(args, strategy_name, hyperparamters, model, optimizer, criteri
         )
     if strategy_name == "gpm":
 
-        all_train_losses = []
         if args.save_evecs_sep:
             if not os.path.exists(args.evec_history_dir):
                 os.makedirs(args.evec_history_dir)
@@ -187,9 +216,19 @@ def run_avalanche(args, strategy_name, hyperparamters, model, optimizer, criteri
                 name = f"eivs-{hes_experience.current_experience}-before-training.pt"
                 evec_history_path = os.path.join(args.evec_history_dir, name) 
                 torch.save(evecs.T, evec_history_path)
+        
+        all_train_losses = []
+        cur_holdouts = []
+
         for exp_id, experience in enumerate(benchmark.train_stream):
+            cur_holdouts.append(holdout_datasets[exp_id])
             print(f"Start of experience {exp_id + 1}: {experience}")
-            train_losses = strategy.train(experience)
+            holdout_logger = PeriodicCaller(
+                HoldoutLogger(args.batch_size, model, cur_holdouts),
+                1
+            ) 
+            train_losses = strategy.train(experience, holdout_logger=holdout_logger)
+            
             if args.save_evecs_sep:
                 for hes_experience in benchmark.train_stream:
                     subset_indices = np.random.choice(len(hes_experience.dataset), args.hessian_subset_size, replace=False)
@@ -303,10 +342,17 @@ def get_holdout_dataset(test_dataset, subset_size):
 def train(train_loader, model, criterion, optimizer, lr, num_epochs: int, algo: str = 'SGD', 
           cur_training_steps=0, num_classes=10, evals=[], evecs=[], phase = "", args = None, **kwargs):
     global TOP_EVEC_TIMER, TOP_EVEC_RECORD_FREQ, TOP_EVECS, SHARPNESS_FREQ, SHARPNESS_TIMER
-    holdout_acc_timer = 0
+
     holdout_acc_freq = 1
     if args is not None:
         holdout_acc_freq = args.holdout_acc_freq
+    if 'holdouts' in kwargs:
+        holdout_logger = PeriodicCaller(
+            HoldoutLogger(args.batch_size, model, kwargs['holdouts']),
+            holdout_acc_freq
+        ) 
+    else:
+        holdout_logger = None
     
     losses = []
     per_epoch_losses = []
@@ -381,16 +427,8 @@ def train(train_loader, model, criterion, optimizer, lr, num_epochs: int, algo: 
                     if TOP_EVEC_TIMER % TOP_EVEC_RECORD_FREQ == 0:
                         TOP_EVECS.append((cur_training_steps, phase, optimizer.evecs.clone()))
                     TOP_EVEC_TIMER += 1
-
-                if 'holdouts' in kwargs:
-                    if holdout_acc_timer % holdout_acc_freq == 0:
-                        for i, holdout_dataset in enumerate(kwargs['holdouts']):
-                                holdout_loader = DataLoader(dataset=holdout_dataset, 
-                                                            batch_size=args.batch_size,
-                                                            shuffle=True, pin_memory=True)
-                                holdout_accuracy = eval(holdout_loader, model, verbose = False)
-                                wandb.log({f"exp_{i}_accuracy" : holdout_accuracy})
-                    holdout_acc_timer += 1
+                if holdout_logger is not None:
+                    holdout_logger()
         print(
             f'Epoch [{epoch + 1}/{num_epochs}], Loss: {(loss_sum / batches):.4f}')
         wandb.log({'loss': (loss_sum / batches)})
@@ -655,7 +693,7 @@ def cl_task(args):
                 "train_mb_size": batch_size,
                 "train_epochs": args.epochs,
                 "eval_mb_size": batch_size,
-                "lr": args.lr,
+                "lr": args.lr
             },
             "ogd" : {
                 "train_mb_size": batch_size,
