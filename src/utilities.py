@@ -131,7 +131,7 @@ def overlap_top_tr(top_evecs1, top_evecs2, device="cpu"):
     assert top_evecs1.shape[-1] == top_evecs2.shape[-1] # Model dimensions should be the same
     
     tr_composition = torch.sum((top_evecs1 @ top_evecs2.T) ** 2)  # Tr(P_t P'_t)
-    return tr_composition / torch.sqrt(top_evecs1.shape[0] * top_evecs2.shape[0])
+    return tr_composition / np.sqrt(top_evecs1.shape[0] * top_evecs2.shape[0])
 
 def overlap_bulk_tr(top_evecs1, top_evecs2, device="cpu"):
     """
