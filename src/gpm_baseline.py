@@ -125,6 +125,7 @@ class GPM(SupervisedTemplate):
         train_mb_size,
         train_epochs,
         eval_mb_size,
+        device,
         **base_kwargs
     ):
         super().__init__(
@@ -134,10 +135,12 @@ class GPM(SupervisedTemplate):
             train_mb_size=train_mb_size,
             train_epochs=train_epochs,
             eval_mb_size=eval_mb_size,
+            device=device,
             **base_kwargs
         )
         self.lr = lr
         self._criterion = criterion
+        self._device = device
 
     def epoch_loss(self, losses):        
         # Compute average loss for the epoch
@@ -213,7 +216,7 @@ class GPM(SupervisedTemplate):
     def train(self, experience, holdout_logger):
         model = self.model
         criterion = self._criterion
-        device = self.device
+        device = self._device
         optimizer = self.optimizer
         task_id = experience.current_experience # experience id
         lr = self.lr
