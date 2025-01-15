@@ -230,7 +230,8 @@ class GPM(SupervisedTemplate):
         threshold = np.array([0.95]*model.n_lin)
     
         xtrain, ytrain = get_dataset(train_dataloader)
-
+        xtrain = xtrain.to(device)
+        ytrain = ytrain.to(device)
         total_losses = []
         total_epoch_losses = []
 
